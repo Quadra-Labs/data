@@ -1,0 +1,140 @@
+/**
+ * Record shapes for the Quadra data layer.
+ *
+ * Each public database is a single JSON document stored on Walrus behind one
+ * on-chain `JsonPointer`. Records are keyed by id so updates are cheap dot-path
+ * mutations. Job results are the exception: each is its own Seal-encrypted blob,
+ * discoverable through the public results index.
+ */
+
+/** A job category. Agents belong to exactly one. */
+export type Category = 'finance' | 'prediction';
+
+/** Which Quadra database a value belongs to. Used for routing and watch events. */
+export type DbName =
+    | 'agent_scores'
+    | 'delayed_failed_jobs'
+    | 'job_templates'
+    | 'job_scheduler'
+    | 'job_results_index';
+
+// --- agent_scores ----------------------------------------------------------
+
+/** One agent's running performance, recomputed on every delivery. */
+export interface AgentScore {
+    /** Agent wallet address (the agent id). */
+    wallet: string;
+    /** Overall score in [0, 100], an equal-weight average of all job scores. */
+    score: number;
+    /** How many jobs the agent has delivered (the average's denominator). */
+    total_jobs_delivered: number;
+}
+
+export interface AgentScoresDoc {
+    agents: Record<string, AgentScore>;
+    updated_at: number;
+}
+
+// Agent identity now lives on chain (`agent::AgentRegistry`); see `OnchainAgents`.
+
+// --- delayed_failed_jobs ---------------------------------------------------
+
+/** Why a job ended up in the delayed/failed log. */
+export type FailureKind = 'delayed' | 'failed';
+
+/** One entry in the delayed/failed jobs log. */
+export interface FailedJob {
+    job_id: string;
+    /** The agent the job was assigned to, if known. */
+    agent: string | null;
+    kind: FailureKind;
+    /** Human-readable reason (e.g. the evaluation engine's error). */
+    reason: string;
+    /** When the failure was recorded, epoch ms. */
+    at: number;
+}
+
+export interface DelayedFailedJobsDoc {
+    jobs: FailedJob[];
+    updated_at: number;
+}
+
+// --- job_templates ---------------------------------------------------------
+
+/**
+ * A well-defined job shape. `output` is a field -> type-name schema describing
+ * exactly what an agent must return, e.g. `{ minPrice: 'number', maxPrice: 'number' }`.
+ */
+export interface JobTemplate {
+    id: string;
+    category: Category;
+    description: string;
+    output: Record<string, string>;
+    /** The evaluation engine's category id (e.g. "btc-price-guess"). One enclave
+     * serves one evaluator_id; the scheduler maps it to that engine's URL. */
+    evaluator_id: string;
+}
+
+export interface JobTemplatesDoc {
+    templates: Record<string, JobTemplate>;
+    updated_at: number;
+}
+
+// --- job_scheduler ---------------------------------------------------------
+
+/**
+ * Map of `job_id -> expiry (epoch ms)`. The scheduler engine lists this every
+ * epoch and acts on the entries whose expiry has passed.
+ */
+export interface JobSchedulerDoc {
+    jobs: Record<string, number>;
+    updated_at: number;
+}
+
+// --- job_results -----------------------------------------------------------
+
+/** Lifecycle of a job result. */
+export type JobStatus = 'pending' | 'delivered' | 'failed';
+
+/** The job a result belongs to: its lifetime plus the template it was built from. */
+export interface JobSpec {
+    /** e.g. "5m" — how long the job is live. Mandatory. */
+    lifetime: string;
+    template: JobTemplate;
+}
+
+/**
+ * The plaintext of a private job result. The whole object is Seal-encrypted and
+ * stored as a Walrus blob; only the job's user and agent can decrypt it.
+ */
+export interface JobResult {
+    job_id: string;
+    /** The paying user's wallet. */
+    user: string;
+    /** The agent's wallet. */
+    agent: string;
+    status: JobStatus;
+    job: JobSpec;
+    /** What the agent returned (shape matches the template `output`). */
+    agent_result: Record<string, unknown>;
+    /** The deterministic data the evaluation engine produced. */
+    finalized_result: Record<string, unknown>;
+    /** The evaluation score in [0, 100]. */
+    score: number;
+    started_at: number;
+    delivered_at: number;
+}
+
+/** The JSON envelope actually written to Walrus for a sealed result. */
+export interface SealedResultBlob {
+    sealed: true;
+    job_id: string;
+    /** Base64 of the Seal `encryptedObject` bytes. */
+    enc: string;
+}
+
+/** Public index mapping `job_id -> blobId` of the sealed result. */
+export interface JobResultsIndexDoc {
+    results: Record<string, string>;
+    updated_at: number;
+}
