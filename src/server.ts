@@ -12,7 +12,7 @@ import Fastify from 'fastify';
 import { DataLayer } from './index.js';
 import { loadGatewayAuth, type Role } from './config.js';
 import { requireAgent, requireRole } from './auth.js';
-import type { FailedJob, JobTemplate, SealedResultBlob } from './types.js';
+import type { FailedJob, JobStart, JobTemplate, SealedResultBlob } from './types.js';
 
 function startServer(): void {
     try {
@@ -79,8 +79,8 @@ function startServer(): void {
     app.get('/scheduler/due', async () => dl.jobScheduler.due());
     app.put('/scheduler/:jobId', { preHandler: role('intake') }, async (req) => {
         const { jobId } = req.params as { jobId: string };
-        const { expires_at } = req.body as { expires_at: number };
-        await dl.jobScheduler.set(jobId, expires_at);
+        const { expires_at, start } = req.body as { expires_at: number; start?: JobStart };
+        await dl.jobScheduler.set(jobId, expires_at, start);
         return { ok: true };
     });
     app.delete('/scheduler/:jobId', { preHandler: role('scheduler') }, async (req) => {

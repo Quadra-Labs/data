@@ -70,9 +70,19 @@ export interface JobTemplate {
     category: Category;
     description: string;
     output: Record<string, string>;
-    /** The evaluation engine's category id (e.g. "btc-price-guess"). One enclave
+    /** The evaluation engine's category id (e.g. "price-range-guess"). One enclave
      * serves one evaluator_id; the scheduler maps it to that engine's URL. */
     evaluator_id: string;
+    /**
+     * Schema for the start data captured at delivery (field -> type-name), e.g.
+     * `{ start_price: 'number' }`. The validator asks the eval engine for it and
+     * intake records it in the scheduler so it survives until scoring.
+     */
+    start_data_template: Record<string, string>;
+    /** Shortest lifetime this template accepts, in milliseconds (e.g. 60000 = 1 min). */
+    minimum_lifetime: number;
+    /** Asset symbols a job may target (subset of the supported universe). */
+    allowed_assets: string[];
 }
 
 export interface JobTemplatesDoc {
@@ -82,12 +92,21 @@ export interface JobTemplatesDoc {
 
 // --- job_scheduler ---------------------------------------------------------
 
+/** The asset + start data snapshotted at delivery, kept until the job is scored. */
+export interface JobStart {
+    asset: string;
+    /** Matches the template's `start_data_template` (e.g. `{ start_price: ... }`). */
+    data: Record<string, unknown>;
+}
+
 /**
- * Map of `job_id -> expiry (epoch ms)`. The scheduler engine lists this every
- * epoch and acts on the entries whose expiry has passed.
+ * `job_id -> expiry (epoch ms)` plus a parallel `job_id -> start data` map. The
+ * scheduler engine lists `jobs` every epoch, acts on due entries, and reads
+ * `start_data` to score against the price captured at delivery.
  */
 export interface JobSchedulerDoc {
     jobs: Record<string, number>;
+    start_data: Record<string, JobStart>;
     updated_at: number;
 }
 

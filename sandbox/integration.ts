@@ -349,11 +349,14 @@ async function main(): Promise<void> {
         agentWallet: Ed25519Keypair.generate().toSuiAddress(),
         ownerWallet: Ed25519Keypair.generate().toSuiAddress(),
         template: {
-            id: 'btc_price_5m',
+            id: 'price_range_5m',
             category: 'finance',
-            description: 'Predict the BTC price range over the lifetime window',
+            description: 'Predict the price range over the lifetime window',
             output: { minPrice: 'number', maxPrice: 'number' },
-            evaluator_id: 'btc-price-guess',
+            evaluator_id: 'price-range-guess',
+            start_data_template: { start_price: 'number' },
+            minimum_lifetime: 60_000,
+            allowed_assets: ['BTC', 'ETH', 'SOL', 'SUI'],
         },
     };
 

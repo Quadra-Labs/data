@@ -11,15 +11,15 @@ agent — enforced on chain by `quadra::job_access::seal_approve`.
 
 ## Databases
 
-| Database              | Storage            | Notes                                              |
-| --------------------- | ------------------ | -------------------------------------------------- |
-| `agent_scores`        | Walrus, public     | Equal-weight running average per agent wallet.     |
-| `agents`              | Walrus, public     | Agent identity registry (`wallet, owner, category`).|
-| `delayed_failed_jobs` | Walrus, public     | Append-only log of delayed/failed jobs.            |
-| `job_templates`       | Walrus, public     | Exact lookup by template id.                       |
-| `job_scheduler`       | Walrus, public     | `job_id -> expiry`; enumerate due jobs each epoch. |
-| `job_results_index`   | Walrus, public     | `job_id -> blobId` of the sealed result.           |
-| job results           | Seal, private      | One encrypted blob per job; user + agent only.     |
+| Database              | Storage        | Notes                                                |
+| --------------------- | -------------- | ---------------------------------------------------- |
+| `agent_scores`        | Walrus, public | Equal-weight running average per agent wallet.       |
+| `agents`              | Walrus, public | Agent identity registry (`wallet, owner, category`). |
+| `delayed_failed_jobs` | Walrus, public | Append-only log of delayed/failed jobs.              |
+| `job_templates`       | Walrus, public | Exact lookup by template id.                         |
+| `job_scheduler`       | Walrus, public | `job_id -> expiry`; enumerate due jobs each epoch.   |
+| `job_results_index`   | Walrus, public | `job_id -> blobId` of the sealed result.             |
+| job results           | Seal, private  | One encrypted blob per job; user + agent only.       |
 
 ## Setup
 
@@ -49,12 +49,12 @@ import { DataLayer } from 'quadra-data';
 const dl = DataLayer.fromEnv();
 
 await dl.agents.register({ wallet, owner, category: 'finance' });
-await dl.agentScores.recordJob(wallet, 87);          // folds into the running average
+await dl.agentScores.recordJob(wallet, 87); // folds into the running average
 await dl.jobScheduler.set(jobId, Date.now() + 300_000);
-const due = await dl.jobScheduler.due();             // for the scheduler engine
+const due = await dl.jobScheduler.due(); // for the scheduler engine
 
 // Private results
-await dl.jobResults.store(result);                   // encrypt + store + index
+await dl.jobResults.store(result); // encrypt + store + index
 const result = await dl.jobResults.decrypt(jobId, userOrAgentKeypair);
 
 // Watch
@@ -82,12 +82,12 @@ configured via `ROLE_TOKEN_INTAKE` / `_SCHEDULER` / `_ADMIN`); agents send a
 signed message (`x-quadra-ts` + `x-quadra-sig`). Reads are open. `admin` is a
 superuser **except** for `job_results` (agent-signature only).
 
-| Write | Allowed by |
-| --- | --- |
-| `POST /agent-scores/record`, `POST /delayed-failed` | scheduler, admin |
-| `PUT /scheduler/:id` | intake, admin · `DELETE /scheduler/:id` | scheduler, admin |
-| `PUT /templates` | admin |
-| `POST /job-results` (sealed envelope) | agent signature (registered) only |
+| Write                                               | Allowed by                              |
+| --------------------------------------------------- | --------------------------------------- | ---------------- |
+| `POST /agent-scores/record`, `POST /delayed-failed` | scheduler, admin                        |
+| `PUT /scheduler/:id`                                | intake, admin · `DELETE /scheduler/:id` | scheduler, admin |
+| `PUT /templates`                                    | admin                                   |
+| `POST /job-results` (sealed envelope)               | agent signature (registered) only       |
 
 `GET /agents` / `/agents/:wallet` read the **on-chain** `agent::AgentRegistry`;
 agents register on chain (`agent::register_agent`), not through the gateway.

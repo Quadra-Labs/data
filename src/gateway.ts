@@ -1,4 +1,4 @@
-import type { AgentScore, FailedJob, JobTemplate, SealedResultBlob } from './types.js';
+import type { AgentScore, FailedJob, JobStart, JobTemplate, SealedResultBlob } from './types.js';
 
 export interface GatewayClientOptions {
     /** Base URL of the data gateway (e.g. http://localhost:8787). */
@@ -33,10 +33,12 @@ export class GatewayClient {
         return this.#send('POST', '/delayed-failed', entry);
     }
 
-    /** Schedule (or reschedule) a job's lifetime expiry. */
-    scheduleJob(jobId: string, expiresAt: number): Promise<{ ok: true }> {
+    /** Schedule (or reschedule) a job's lifetime expiry, optionally with the
+     * start data captured at delivery. */
+    scheduleJob(jobId: string, expiresAt: number, start?: JobStart): Promise<{ ok: true }> {
         return this.#send('PUT', `/scheduler/${encodeURIComponent(jobId)}`, {
             expires_at: expiresAt,
+            ...(start ? { start } : {}),
         });
     }
 
