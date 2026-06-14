@@ -7,6 +7,11 @@ import type { JobResult, SealedResultBlob } from './types.js';
 import type { JobResultsIndex } from './dbs/jobResultsIndex.js';
 import { withWriteLock } from './writeLock.js';
 
+/** Backdate the decryption SessionKey by this much so a local clock slightly AHEAD of the Seal
+ * key servers does not make the key look future-dated (the servers reject that as "Session key
+ * has expired"). Well within the key's TTL, so it never trips the local expiry check. */
+const SESSION_KEY_BACKDATE_MS = 60_000;
+
 /** Seal identity bytes for a job = the UTF-8 job id (matches `job_access::seal_approve`). */
 function identityBytes(jobId: string): Uint8Array {
     return new TextEncoder().encode(jobId);
@@ -91,12 +96,19 @@ export class JobResults {
         const sealed = await this.fetchSealed(jobId);
         const encrypted = Uint8Array.from(Buffer.from(sealed.enc, 'base64'));
 
-        const sessionKey = await SessionKey.create({
+        const fresh = await SessionKey.create({
             address: requester.toSuiAddress(),
             packageId: this.#o.quadraPackageId,
             ttlMin: this.#o.sessionTtlMin ?? 10,
             suiClient: this.#o.sui,
         });
+        // Re-import with a backdated creationTimeMs BEFORE signing (the signed personal message
+        // embeds the creation time), so a clock ahead of the key servers does not look future-dated.
+        const exported = fresh.export();
+        const sessionKey = SessionKey.import(
+            { ...exported, creationTimeMs: exported.creationTimeMs - SESSION_KEY_BACKDATE_MS },
+            this.#o.sui,
+        );
         const { signature } = await requester.signPersonalMessage(sessionKey.getPersonalMessage());
         await sessionKey.setPersonalMessageSignature(signature);
 

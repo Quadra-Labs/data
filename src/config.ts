@@ -90,12 +90,29 @@ export function loadConfig(): DataLayerConfig {
 
 /** Build the shared clients with `signer`. Seal reuses the Sui connection. */
 function buildClients(config: DataLayerConfig, signer: Ed25519Keypair): Clients {
+    // Upload through the Walrus UPLOAD RELAY (a few seconds) instead of uploading directly to
+    // every storage node (tens of seconds, hang-prone on testnet). Defaults to Mysten's testnet
+    // relay; override the host with WALRUS_UPLOAD_RELAY_HOST (set it for mainnet). The relay
+    // charges a small WAL tip per blob (testnet advertises a const ~105 FROST); sendTip.max caps
+    // it. Set WALRUS_UPLOAD_RELAY_HOST="" to fall back to direct uploads.
+    const relayEnv = process.env.WALRUS_UPLOAD_RELAY_HOST;
+    const relayHost =
+        relayEnv !== undefined
+            ? relayEnv.trim()
+            : config.network === 'testnet'
+              ? 'https://upload-relay.testnet.walrus.space'
+              : '';
+    const relayMaxTip = Number(process.env.WALRUS_UPLOAD_RELAY_MAX_TIP ?? 1_000_000);
+
     const wj = new WalrusJsonClient({
         network: config.network,
         signer,
         packageId: config.walrusJsonPackageId,
         defaultEpochs: config.epochs,
         ...(process.env.DATA_BASE_URL ? { baseUrl: process.env.DATA_BASE_URL } : {}),
+        ...(relayHost.length > 0
+            ? { walrus: { uploadRelay: { host: relayHost, sendTip: { max: relayMaxTip } } } }
+            : {}),
     });
 
     const sui = wj.sui as unknown as SealCompatibleClient;
