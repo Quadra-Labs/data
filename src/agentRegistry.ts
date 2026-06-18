@@ -8,10 +8,18 @@ export interface AgentInfo {
     category: string;
     name: string;
     description: string;
+    /** Scoreless agents are paid on delivery but never scored and cannot compete. */
+    scoreless: boolean;
 }
 
 /** The `AgentInfo` Move struct fields as parsed by the JSON-RPC client. */
-type RawAgentInfo = { owner: string; name: string; description: string; category: string };
+type RawAgentInfo = {
+    owner: string;
+    name: string;
+    description: string;
+    category: string;
+    scoreless: boolean;
+};
 
 export interface OnchainAgentsOptions {
     network: WalrusNetwork;
@@ -74,6 +82,7 @@ export class OnchainAgents {
             category: info.category,
             name: info.name,
             description: info.description,
+            scoreless: info.scoreless === true,
         };
     }
 
@@ -113,6 +122,7 @@ export class OnchainAgents {
                             category: info.category,
                             name: info.name,
                             description: info.description,
+                            scoreless: info.scoreless === true,
                         });
                     }
                 }

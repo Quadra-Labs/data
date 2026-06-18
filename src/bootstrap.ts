@@ -13,6 +13,7 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { WalrusJsonClient, type JsonValue, type WalrusNetwork } from 'walrus-json';
 
 import { EMPTY_AGENT_SCORES } from './dbs/agentScores.js';
+import { EMPTY_AGENT_ENDPOINTS } from './dbs/agentEndpoints.js';
 import { EMPTY_DELAYED_FAILED } from './dbs/delayedFailedJobs.js';
 import { EMPTY_JOB_TEMPLATES } from './dbs/jobTemplates.js';
 import { EMPTY_JOB_SCHEDULER } from './dbs/jobScheduler.js';
@@ -27,6 +28,7 @@ function required(name: string): string {
 
 const DATABASES: { envVar: string; initial: unknown }[] = [
     { envVar: 'POINTER_AGENT_SCORES', initial: EMPTY_AGENT_SCORES },
+    { envVar: 'POINTER_AGENT_ENDPOINTS', initial: EMPTY_AGENT_ENDPOINTS },
     { envVar: 'POINTER_DELAYED_FAILED', initial: EMPTY_DELAYED_FAILED },
     { envVar: 'POINTER_JOB_TEMPLATES', initial: EMPTY_JOB_TEMPLATES },
     { envVar: 'POINTER_JOB_SCHEDULER', initial: EMPTY_JOB_SCHEDULER },
@@ -51,9 +53,16 @@ async function main(): Promise<void> {
         ...(process.env.DATA_BASE_URL ? { baseUrl: process.env.DATA_BASE_URL } : {}),
     });
 
-    console.log(`Bootstrapping ${DATABASES.length} pointers on ${network} (epochs=${epochs})...\n`);
+    // Idempotent: skip pointers already set in the env, create only the missing ones.
+    // Re-running after adding a new database mints just that pointer (existing data is kept).
+    const missing = DATABASES.filter(({ envVar }) => !process.env[envVar]);
+    if (missing.length === 0) {
+        console.log('All pointers are already set in the environment; nothing to bootstrap.');
+        return;
+    }
+    console.log(`Bootstrapping ${missing.length} pointer(s) on ${network} (epochs=${epochs})...\n`);
     const lines: string[] = [];
-    for (const { envVar, initial } of DATABASES) {
+    for (const { envVar, initial } of missing) {
         const doc = wj.create(initial as JsonValue);
         const { blobId } = await doc.commit({ epochs });
         const pointerId = await wj.createPointer(blobId);

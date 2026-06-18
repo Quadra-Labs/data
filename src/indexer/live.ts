@@ -39,6 +39,8 @@ export async function liveAgentRows(dl: DataLayer, owner?: string): Promise<Agen
         category: a.category,
         score: scores[a.wallet]?.score ?? 0,
         jobs: scores[a.wallet]?.total_jobs_delivered ?? 0,
+        scoreless: a.scoreless,
+        createdAt: 0, // unknown without the index; "newest" ordering needs the indexer
     }));
     if (owner) rows = rows.filter((r) => sameAddr(r.owner, owner));
     return rows;
@@ -63,6 +65,8 @@ export function rankAndPage(rows: AgentRow[], q: AgentsQuery): AgentsPage {
     const minJobs = q.minJobs ?? 0;
     const filtered = rows.filter(
         (r) =>
+            // Scoreless agents are never scored, so they are excluded from the leaderboard.
+            !r.scoreless &&
             r.jobs >= minJobs &&
             (category === '' || r.category === category) &&
             (search === '' ||

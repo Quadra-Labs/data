@@ -53,7 +53,12 @@ function check(label: string, cond: boolean): void {
 // Every write commits a brand-new immutable blob and re-points the on-chain
 // pointer at it. Read the pointer back so each write shows its new blob id.
 async function blob(dl: DataLayer, db: DbName): Promise<void> {
-    const p = await dl.clients.wj.readPointer(dl.config.pointers[db]);
+    const pointerId = dl.config.pointers[db];
+    if (!pointerId) {
+        console.log(`    ⛁ ${db}: (no pointer configured)`);
+        return;
+    }
+    const p = await dl.clients.wj.readPointer(pointerId);
     console.log(`    ⛁ ${db}: pointer version ${p.version} -> blob ${p.blobId}`);
 }
 

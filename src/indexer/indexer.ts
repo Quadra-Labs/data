@@ -77,11 +77,16 @@ function main(): void {
                 break;
             case types.agentRegistered: {
                 const wallet = str(json.agent_id);
-                // The event omits the description, so fetch the full AgentInfo once.
+                // The event omits the description, so fetch the full AgentInfo once. Prefer the
+                // on-chain scoreless flag from it; fall back to the event field.
                 let description = '';
+                let scoreless = json.scoreless === true;
                 try {
                     const info = await dl.agents.get(wallet);
-                    if (info) description = info.description;
+                    if (info) {
+                        description = info.description;
+                        scoreless = info.scoreless;
+                    }
                 } catch {
                     // Keep the event fields; description fills in on the next reconcile.
                 }
@@ -91,6 +96,7 @@ function main(): void {
                     name: str(json.name),
                     category: str(json.category),
                     description,
+                    scoreless,
                 });
                 break;
             }
@@ -129,6 +135,7 @@ function main(): void {
                 name: a.name,
                 description: a.description,
                 category: a.category,
+                scoreless: a.scoreless,
             });
         }
         console.log(`[indexer] seeded ${agents.length} agents`);

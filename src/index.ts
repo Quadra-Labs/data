@@ -7,6 +7,7 @@ import {
     type PointerIds,
 } from './config.js';
 import { AgentScores } from './dbs/agentScores.js';
+import { AgentEndpoints } from './dbs/agentEndpoints.js';
 import { OnchainAgents } from './agentRegistry.js';
 import { DelayedFailedJobs } from './dbs/delayedFailedJobs.js';
 import { JobTemplates } from './dbs/jobTemplates.js';
@@ -26,6 +27,8 @@ export class DataLayer {
     readonly clients: Clients;
 
     readonly agentScores: AgentScores;
+    /** Where live agents can be reached. Undefined until the pointer is bootstrapped. */
+    readonly agentEndpoints?: AgentEndpoints;
     /** Agent identity — read from the on-chain `agent::AgentRegistry`. */
     readonly agents: OnchainAgents;
     readonly delayedFailedJobs: DelayedFailedJobs;
@@ -42,6 +45,9 @@ export class DataLayer {
         const { wj } = clients;
         const { epochs, pointers } = config;
         this.agentScores = new AgentScores(wj, pointers.agent_scores, epochs);
+        if (pointers.agent_endpoints) {
+            this.agentEndpoints = new AgentEndpoints(wj, pointers.agent_endpoints, epochs);
+        }
         this.agents = new OnchainAgents({
             network: config.network,
             ...(process.env.DATA_BASE_URL ? { url: process.env.DATA_BASE_URL } : {}),
@@ -109,6 +115,7 @@ export {
 export type { ResolvedEvalEngine, EvalEngineLookup } from './evalEngineRegistry.js';
 
 export { AgentScores } from './dbs/agentScores.js';
+export { AgentEndpoints, EMPTY_AGENT_ENDPOINTS } from './dbs/agentEndpoints.js';
 export { OnchainAgents } from './agentRegistry.js';
 export type { AgentInfo, OnchainAgentsOptions } from './agentRegistry.js';
 export { DelayedFailedJobs } from './dbs/delayedFailedJobs.js';

@@ -85,6 +85,27 @@ function startServer(): void {
         return dl.agentScores.recordJob(wallet, score);
     });
 
+    // --- agent endpoints (self-published live URL; chat discovery) ----------
+    app.get('/agent-endpoints/:wallet', async (req, reply) => {
+        if (!dl.agentEndpoints) return reply.code(503).send({ error: 'agent endpoints not configured' });
+        const { wallet } = req.params as { wallet: string };
+        return (await dl.agentEndpoints.get(wallet)) ?? null;
+    });
+    // The agent self-publishes its own URL (signed); the recovered wallet is the key.
+    app.post(
+        '/agent-endpoints',
+        { preHandler: requireAgent(dl, auth, { requireRegistered: true, allowAdmin: false }) },
+        async (req, reply) => {
+            if (!dl.agentEndpoints) return reply.code(503).send({ error: 'agent endpoints not configured' });
+            const wallet = (req as { agentWallet?: string }).agentWallet!;
+            const { url } = req.body as { url?: string };
+            if (typeof url !== 'string' || !/^https?:\/\//.test(url)) {
+                return reply.code(400).send({ error: 'url (http/https) is required' });
+            }
+            return dl.agentEndpoints.set(wallet, url);
+        },
+    );
+
     // --- agent identity + scores + jobs (served from the off-chain index) ---
     // Joined rows (identity + running score + jobs), optionally filtered by owner.
     app.get('/agents', async (req) => {
@@ -126,6 +147,20 @@ function startServer(): void {
         const p = page ? Number(page) : 0;
         const ps = pageSize ? Number(pageSize) : 50;
         return { jobs: filtered.slice(p * ps, p * ps + ps), total: filtered.length };
+    });
+
+    // --- network activity (dashboard) --------------------------------------
+    // Recent deliveries across all agents + a daily activity series. Index-backed;
+    // the live path has no jobs mirror, so it returns empty (run the indexer for these).
+    app.get('/jobs/recent', async (req) => {
+        const { limit } = req.query as { limit?: string };
+        const idx = useIndex();
+        return { jobs: idx ? idx.recentJobs(limit ? Number(limit) : 8) : [] };
+    });
+    app.get('/stats/activity', async (req) => {
+        const { days } = req.query as { days?: string };
+        const idx = useIndex();
+        return { days: idx ? idx.activitySeries(days ? Number(days) : 14) : [] };
     });
 
     // --- delayed & failed jobs ---------------------------------------------

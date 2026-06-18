@@ -19,6 +19,28 @@ export type AgentRow = {
     category: string;
     score: number;
     jobs: number;
+    /** Scoreless agents are paid on delivery, never scored, and excluded from the leaderboard. */
+    scoreless: boolean;
+    /** When the agent was first indexed (epoch ms); used for "newest agents". */
+    createdAt: number;
+};
+
+/** One recently delivered (released) job across all agents, for the activity feed. */
+export type RecentJobRow = {
+    jobId: string;
+    agent: string;
+    agentName: string;
+    earned: number;
+    paidAtMs: number;
+};
+
+/** One day of network activity. */
+export type ActivityDay = {
+    /** Day start (epoch ms, UTC). */
+    day: number;
+    jobsSettled: number;
+    newAgents: number;
+    totalAgents: number;
 };
 
 export type RankedAgentRow = AgentRow & { overall: number; rank: number };
@@ -59,6 +81,7 @@ type DbAgent = {
     score: number;
     total_jobs: number;
     created_at: number;
+    scoreless: number;
 };
 
 type DbJob = {
@@ -79,7 +102,8 @@ CREATE TABLE IF NOT EXISTS agents (
     category TEXT NOT NULL DEFAULT '',
     score INTEGER NOT NULL DEFAULT 0,
     total_jobs INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL DEFAULT 0
+    created_at INTEGER NOT NULL DEFAULT 0,
+    scoreless INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner);
 
@@ -114,6 +138,8 @@ function toAgentRow(r: DbAgent): AgentRow {
         category: r.category,
         score: r.score,
         jobs: r.total_jobs,
+        scoreless: r.scoreless === 1,
+        createdAt: r.created_at,
     };
 }
 
@@ -138,6 +164,18 @@ export class IndexDb {
             this.#db.pragma('journal_mode = WAL');
             this.#db.pragma('synchronous = NORMAL');
             this.#db.exec(SCHEMA);
+            this.#migrate();
+        }
+    }
+
+    // Idempotent column additions for DBs created before a column existed. CREATE TABLE IF NOT
+    // EXISTS won't add columns to an existing table, so add any missing ones here.
+    #migrate(): void {
+        const cols = (this.#db.prepare(`PRAGMA table_info(agents)`).all() as { name: string }[]).map(
+            (c) => c.name,
+        );
+        if (!cols.includes('scoreless')) {
+            this.#db.exec(`ALTER TABLE agents ADD COLUMN scoreless INTEGER NOT NULL DEFAULT 0`);
         }
     }
 
@@ -188,19 +226,21 @@ export class IndexDb {
         name: string;
         description: string;
         category: string;
+        scoreless?: boolean;
         createdAt?: number;
     }): void {
         this.#db
             .prepare(
-                `INSERT INTO agents (wallet, owner, name, description, category, created_at)
-                 VALUES (@wallet, @owner, @name, @description, @category, @createdAt)
+                `INSERT INTO agents (wallet, owner, name, description, category, scoreless, created_at)
+                 VALUES (@wallet, @owner, @name, @description, @category, @scoreless, @createdAt)
                  ON CONFLICT(wallet) DO UPDATE SET
                      owner = excluded.owner,
                      name = excluded.name,
                      description = excluded.description,
-                     category = excluded.category`,
+                     category = excluded.category,
+                     scoreless = excluded.scoreless`,
             )
-            .run({ ...a, createdAt: a.createdAt ?? Date.now() });
+            .run({ ...a, scoreless: a.scoreless ? 1 : 0, createdAt: a.createdAt ?? Date.now() });
     }
 
     /** Replace every agent's running score from the agent_scores document. */
@@ -319,7 +359,9 @@ export class IndexDb {
                     ? 'name COLLATE NOCASE'
                     : 'overall';
 
-        const where = `WHERE total_jobs >= @minJobs
+        // Scoreless agents are never scored, so they are excluded from the ranked leaderboard.
+        const where = `WHERE scoreless = 0
+            AND total_jobs >= @minJobs
             AND (@category = '' OR category = @category)
             AND (@search = '' OR lower(name) LIKE @search OR lower(description) LIKE @search)`;
         const params = {
@@ -367,6 +409,60 @@ export class IndexDb {
             .prepare(`SELECT * FROM jobs ${where} ORDER BY paid_at_ms DESC LIMIT @limit OFFSET @offset`)
             .all(params) as DbJob[];
         return { jobs: rows.map(toJobRow), total };
+    }
+
+    /** Most recent released (delivered + paid) jobs across all agents, newest first. */
+    recentJobs(limit = 8): RecentJobRow[] {
+        const lim = Math.min(50, Math.max(1, limit));
+        return this.#db
+            .prepare(
+                `SELECT j.job_id AS jobId, j.agent AS agent, j.earned AS earned,
+                        j.paid_at_ms AS paidAtMs, COALESCE(a.name, '') AS agentName
+                 FROM jobs j LEFT JOIN agents a ON lower(a.wallet) = lower(j.agent)
+                 WHERE j.status = 'released'
+                 ORDER BY j.paid_at_ms DESC LIMIT @lim`,
+            )
+            .all({ lim }) as RecentJobRow[];
+    }
+
+    /** A daily series for the last `days` days: jobs settled, new agents, cumulative agents. */
+    activitySeries(days = 14): ActivityDay[] {
+        const n = Math.min(60, Math.max(1, days));
+        const DAY = 86_400_000;
+        const today = Math.floor(Date.now() / DAY) * DAY; // UTC day start
+        const start = today - (n - 1) * DAY;
+
+        const jobRows = this.#db
+            .prepare(`SELECT paid_at_ms FROM jobs WHERE status = 'released' AND paid_at_ms >= @start`)
+            .all({ start }) as { paid_at_ms: number }[];
+        const agentRows = this.#db.prepare(`SELECT created_at FROM agents`).all() as {
+            created_at: number;
+        }[];
+
+        const jobsByDay = new Map<number, number>();
+        for (const r of jobRows) {
+            const d = Math.floor(r.paid_at_ms / DAY) * DAY;
+            jobsByDay.set(d, (jobsByDay.get(d) ?? 0) + 1);
+        }
+        const newByDay = new Map<number, number>();
+        let totalBefore = 0;
+        for (const r of agentRows) {
+            if (r.created_at < start) totalBefore += 1;
+            else {
+                const d = Math.floor(r.created_at / DAY) * DAY;
+                newByDay.set(d, (newByDay.get(d) ?? 0) + 1);
+            }
+        }
+
+        const out: ActivityDay[] = [];
+        let cumulative = totalBefore;
+        for (let i = 0; i < n; i++) {
+            const day = start + i * DAY;
+            const newAgents = newByDay.get(day) ?? 0;
+            cumulative += newAgents;
+            out.push({ day, jobsSettled: jobsByDay.get(day) ?? 0, newAgents, totalAgents: cumulative });
+        }
+        return out;
     }
 }
 
