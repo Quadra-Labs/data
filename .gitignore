@@ -2,6 +2,11 @@ node_modules
 dist
 *.log
 
+# Off-chain index (npm run indexer) SQLite files.
+*.db
+*.db-wal
+*.db-shm
+
 # Local secrets / config (incl. .env.bak) — keep .env.example tracked.
 .env*
 !.env.example

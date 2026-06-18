@@ -9,6 +9,7 @@ export interface PointerIds {
     job_templates: string;
     job_scheduler: string;
     job_results_index: string;
+    eval_engines: string;
 }
 
 /** Everything the data layer needs, resolved from the environment. */
@@ -84,6 +85,7 @@ export function loadConfig(): DataLayerConfig {
             job_templates: required('POINTER_JOB_TEMPLATES'),
             job_scheduler: required('POINTER_JOB_SCHEDULER'),
             job_results_index: required('POINTER_JOB_RESULTS_INDEX'),
+            eval_engines: required('POINTER_EVAL_ENGINES'),
         },
     };
 }

@@ -8,11 +8,27 @@
  * a process with Walrus writes.
  */
 import Fastify from 'fastify';
+import { SuiJsonRpcClient, getJsonRpcFullnodeUrl } from '@mysten/sui/jsonRpc';
 
 import { DataLayer } from './index.js';
 import { loadGatewayAuth, type Role } from './config.js';
 import { requireAgent, requireRole } from './auth.js';
-import type { FailedJob, JobStart, JobTemplate, SealedResultBlob } from './types.js';
+import { IndexDb, openReadonly, type AgentsQuery } from './indexer/db.js';
+import { liveAgentDetail, liveAgentJobs, liveAgentRows, rankAndPage } from './indexer/live.js';
+import type { FailedJob, EvalEngineEntry, JobStart, JobTemplate, SealedResultBlob } from './types.js';
+
+function parseAgentsQuery(query: Record<string, unknown>): AgentsQuery {
+    const q = query as Record<string, string | undefined>;
+    return {
+        ...(q.search ? { search: q.search } : {}),
+        ...(q.category ? { category: q.category } : {}),
+        ...(q.minJobs ? { minJobs: Number(q.minJobs) } : {}),
+        ...(q.sort ? { sort: q.sort as AgentsQuery['sort'] } : {}),
+        ...(q.dir === 'asc' || q.dir === 'desc' ? { dir: q.dir } : {}),
+        ...(q.page ? { page: Number(q.page) } : {}),
+        ...(q.pageSize ? { pageSize: Number(q.pageSize) } : {}),
+    };
+}
 
 function startServer(): void {
     try {
@@ -24,6 +40,24 @@ function startServer(): void {
     const dl = DataLayer.fromEnv();
     const auth = loadGatewayAuth();
     const app = Fastify({ logger: true });
+
+    // Off-chain index (written by `npm run indexer`). Opened read-only and lazily so
+    // the gateway picks it up once it appears; falls back to live reads if absent/empty.
+    const indexPath = process.env.INDEXER_DB_PATH ?? 'quadra-index.db';
+    let index: IndexDb | null = null;
+    const useIndex = (): IndexDb | null => {
+        if (!index) index = openReadonly(indexPath);
+        try {
+            if (index && index.agentCount() > 0) return index;
+        } catch {
+            // Corrupt/locked read; fall back to live.
+        }
+        return null;
+    };
+    const fallbackSui = new SuiJsonRpcClient({
+        network: dl.config.network,
+        url: process.env.DATA_BASE_URL ?? getJsonRpcFullnodeUrl(dl.config.network),
+    });
 
     // Capture the raw body so agent signatures verify against the exact bytes.
     app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => {
@@ -51,11 +85,47 @@ function startServer(): void {
         return dl.agentScores.recordJob(wallet, score);
     });
 
-    // --- agent identity (read-only; agents register on chain) --------------
-    app.get('/agents', async () => dl.agents.list());
+    // --- agent identity + scores + jobs (served from the off-chain index) ---
+    // Joined rows (identity + running score + jobs), optionally filtered by owner.
+    app.get('/agents', async (req) => {
+        const { owner } = req.query as { owner?: string };
+        const idx = useIndex();
+        return idx ? idx.listAgents(owner) : liveAgentRows(dl, owner);
+    });
+
+    // Server-side search/filter/sort/pagination with computed overall + rank.
+    app.get('/agents/query', async (req) => {
+        const q = parseAgentsQuery(req.query as Record<string, unknown>);
+        const idx = useIndex();
+        return idx ? idx.queryAgents(q) : rankAndPage(await liveAgentRows(dl), q);
+    });
+
     app.get('/agents/:wallet', async (req) => {
         const { wallet } = req.params as { wallet: string };
-        return (await dl.agents.get(wallet)) ?? null;
+        const idx = useIndex();
+        return idx ? idx.getAgentDetail(wallet) : liveAgentDetail(dl, wallet);
+    });
+
+    app.get('/agents/:wallet/jobs', async (req) => {
+        const { wallet } = req.params as { wallet: string };
+        const { status, page, pageSize } = req.query as {
+            status?: string;
+            page?: string;
+            pageSize?: string;
+        };
+        const idx = useIndex();
+        if (idx) {
+            return idx.listAgentJobs(wallet, {
+                ...(status ? { status } : {}),
+                page: page ? Number(page) : 0,
+                pageSize: pageSize ? Number(pageSize) : 50,
+            });
+        }
+        const all = await liveAgentJobs(fallbackSui, dl.config.quadraPackageId, wallet);
+        const filtered = status ? all.filter((j) => j.status === status) : all;
+        const p = page ? Number(page) : 0;
+        const ps = pageSize ? Number(pageSize) : 50;
+        return { jobs: filtered.slice(p * ps, p * ps + ps), total: filtered.length };
     });
 
     // --- delayed & failed jobs ---------------------------------------------
@@ -73,6 +143,33 @@ function startServer(): void {
     app.put('/templates', { preHandler: role() }, async (req) =>
         dl.jobTemplates.put(req.body as JobTemplate),
     );
+
+    // --- eval engines (routing catalog) ------------------------------------
+    app.get('/eval-engines', async () => dl.evalEngines.list());
+    app.get('/eval-engines/:id', async (req) => {
+        const { id } = req.params as { id: string };
+        return (await dl.evalEngines.get(id)) ?? null;
+    });
+    app.put('/eval-engines/:id', { preHandler: role() }, async (req, reply) => {
+        const { id } = req.params as { id: string };
+        const body = req.body as Partial<EvalEngineEntry>;
+        if (typeof body.url !== 'string' || body.url.length === 0) {
+            return reply.status(400).send({ error: 'url is required' });
+        }
+        return dl.evalEngines.put({
+            evaluator_id: id,
+            url: body.url,
+            ...(typeof body.enclave_id === 'string' && body.enclave_id.length > 0
+                ? { enclave_id: body.enclave_id }
+                : {}),
+        });
+    });
+    app.delete('/eval-engines/:id', { preHandler: role() }, async (req, reply) => {
+        const { id } = req.params as { id: string };
+        const removed = await dl.evalEngines.remove(id);
+        if (!removed) return reply.status(404).send({ error: 'not found' });
+        return { ok: true };
+    });
 
     // --- job scheduler -----------------------------------------------------
     app.get('/scheduler', async () => dl.jobScheduler.list());

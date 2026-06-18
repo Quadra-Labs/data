@@ -1,4 +1,4 @@
-import type { AgentScore, FailedJob, JobStart, JobTemplate, SealedResultBlob } from './types.js';
+import type { AgentScore, EvalEngineEntry, FailedJob, JobStart, JobTemplate, SealedResultBlob } from './types.js';
 
 export interface GatewayClientOptions {
     /** Base URL of the data gateway (e.g. http://localhost:8787). */
@@ -50,6 +50,16 @@ export class GatewayClient {
     /** Create or replace a job template (admin role). */
     putTemplate(template: JobTemplate): Promise<JobTemplate> {
         return this.#send('PUT', '/templates', template);
+    }
+
+    /** Create or replace an eval engine entry (admin role). */
+    putEvalEngine(entry: Omit<EvalEngineEntry, 'updated_at'>): Promise<EvalEngineEntry> {
+        return this.#send('PUT', `/eval-engines/${encodeURIComponent(entry.evaluator_id)}`, entry);
+    }
+
+    /** Remove an eval engine entry (admin role). */
+    removeEvalEngine(evaluatorId: string): Promise<{ ok: true }> {
+        return this.#send('DELETE', `/eval-engines/${encodeURIComponent(evaluatorId)}`);
     }
 
     /** Store an already-sealed result envelope (admin role; agents use signatures). */

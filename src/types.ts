@@ -16,7 +16,8 @@ export type DbName =
     | 'delayed_failed_jobs'
     | 'job_templates'
     | 'job_scheduler'
-    | 'job_results_index';
+    | 'job_results_index'
+    | 'eval_engines';
 
 // --- agent_scores ----------------------------------------------------------
 
@@ -87,6 +88,23 @@ export interface JobTemplate {
 
 export interface JobTemplatesDoc {
     templates: Record<string, JobTemplate>;
+    updated_at: number;
+}
+
+// --- eval_engines ----------------------------------------------------------
+
+/** One evaluation engine (Nautilus enclave) reachable by HTTP. */
+export interface EvalEngineEntry {
+    evaluator_id: string;
+    /** Base URL for `/validate` and `/process_data`. */
+    url: string;
+    /** On-chain `enclave::Enclave` object id (optional in local dev). */
+    enclave_id?: string;
+    updated_at: number;
+}
+
+export interface EvalEnginesDoc {
+    engines: Record<string, EvalEngineEntry>;
     updated_at: number;
 }
 

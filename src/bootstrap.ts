@@ -1,5 +1,5 @@
 /**
- * One-time setup: create the six public `JsonPointer` objects, each seeded with
+ * One-time setup: create the seven public `JsonPointer` objects, each seeded with
  * an empty document. Run once per environment, then paste the printed ids into
  * your `.env`.
  *
@@ -17,6 +17,7 @@ import { EMPTY_DELAYED_FAILED } from './dbs/delayedFailedJobs.js';
 import { EMPTY_JOB_TEMPLATES } from './dbs/jobTemplates.js';
 import { EMPTY_JOB_SCHEDULER } from './dbs/jobScheduler.js';
 import { EMPTY_JOB_RESULTS_INDEX } from './dbs/jobResultsIndex.js';
+import { EMPTY_EVAL_ENGINES } from './dbs/evalEngines.js';
 
 function required(name: string): string {
     const value = process.env[name];
@@ -30,6 +31,7 @@ const DATABASES: { envVar: string; initial: unknown }[] = [
     { envVar: 'POINTER_JOB_TEMPLATES', initial: EMPTY_JOB_TEMPLATES },
     { envVar: 'POINTER_JOB_SCHEDULER', initial: EMPTY_JOB_SCHEDULER },
     { envVar: 'POINTER_JOB_RESULTS_INDEX', initial: EMPTY_JOB_RESULTS_INDEX },
+    { envVar: 'POINTER_EVAL_ENGINES', initial: EMPTY_EVAL_ENGINES },
 ];
 
 async function main(): Promise<void> {
