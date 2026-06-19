@@ -31,6 +31,9 @@
         "serve": "tsx src/server.ts",
         "watch": "tsx src/watch-server.ts",
         "indexer": "tsx src/indexer/indexer.ts",
+        "pm2:serve": "pm2 start npm --name quadra-gateway -- run serve",
+        "pm2:indexer": "pm2 start npm --name quadra-indexer -- run indexer",
+        "pm2:watch": "pm2 start npm --name quadra-watch -- run watch",
         "sandbox": "tsx sandbox/integration.ts",
         "test:gateway": "tsx test/gateway-auth.ts",
         "test:eval-engines": "tsx test/eval-engines.ts"

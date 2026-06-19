@@ -32,6 +32,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { WalrusJsonClient, type JsonValue, type WalrusNetwork } from 'walrus-json';
 
 import { EMPTY_AGENT_SCORES } from '../src/dbs/agentScores.js';
+import { EMPTY_AGENT_ENDPOINTS } from '../src/dbs/agentEndpoints.js';
 import { EMPTY_DELAYED_FAILED } from '../src/dbs/delayedFailedJobs.js';
 import { EMPTY_JOB_TEMPLATES } from '../src/dbs/jobTemplates.js';
 import { EMPTY_JOB_SCHEDULER } from '../src/dbs/jobScheduler.js';
@@ -59,6 +60,7 @@ const DEFAULT_SEAL_KEY_SERVERS: Partial<Record<WalrusNetwork, string[]>> = {
 
 const POINTER_DBS: { envVar: string; initial: unknown }[] = [
     { envVar: 'POINTER_AGENT_SCORES', initial: EMPTY_AGENT_SCORES },
+    { envVar: 'POINTER_AGENT_ENDPOINTS', initial: EMPTY_AGENT_ENDPOINTS },
     { envVar: 'POINTER_DELAYED_FAILED', initial: EMPTY_DELAYED_FAILED },
     { envVar: 'POINTER_JOB_TEMPLATES', initial: EMPTY_JOB_TEMPLATES },
     { envVar: 'POINTER_JOB_SCHEDULER', initial: EMPTY_JOB_SCHEDULER },
