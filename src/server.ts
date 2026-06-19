@@ -69,6 +69,19 @@ function startServer(): void {
         }
     });
 
+    // CORS: the web reads these endpoints directly from the browser. Reads are public, so a
+    // permissive default origin is fine; tighten DATA_CORS_ORIGIN (e.g. https://quadra.sh) in
+    // production. Agent-signed writes + role tokens travel in the x-quadra-* headers, so allow
+    // them on preflight. A wildcard OPTIONS route answers the browser's preflight for any path.
+    const corsOrigin = process.env.DATA_CORS_ORIGIN ?? '*';
+    app.addHook('onSend', async (_req, reply, payload) => {
+        reply.header('access-control-allow-origin', corsOrigin);
+        reply.header('access-control-allow-headers', 'content-type, x-quadra-role, x-quadra-ts, x-quadra-sig');
+        reply.header('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        return payload;
+    });
+    app.options('/*', async (_req, reply) => reply.code(204).send());
+
     // `role()` with no args = admin-only.
     const role = (...roles: Role[]) => requireRole(auth, ...roles);
 
