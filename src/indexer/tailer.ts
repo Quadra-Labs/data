@@ -1,30 +1,18 @@
+/**
+ * Generic checkpoint tailer: subscribes to the Sui gRPC checkpoint stream and
+ * emits every event whose type is in a watch set, plus a per-checkpoint heartbeat
+ * so the caller can persist a resume cursor.
+ *
+ * Uses the NATIVE gRPC transport (@grpc/grpc-js, HTTP/2) rather than grpc-web over
+ * fetch: the fullnode's grpc-web gateway caps long-lived streams at ~30s, while the
+ * native HTTP/2 stream (with keepalive) runs indefinitely. Reconnect + gap backfill
+ * remain as the documented resilience pattern for any blips.
+ */
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { GrpcTransport } from '@protobuf-ts/grpc-transport';
 import { ChannelCredentials } from '@grpc/grpc-js';
 import type { WalrusNetwork } from 'walrus-json';
 
-import type { DbName } from './types.js';
-import type { PointerIds } from './config.js';
-
-export interface PointerChange {
-    db: DbName;
-    pointerId: string;
-    blobId: string;
-    version: number;
-    updatedAtMs: number;
-    checkpoint?: number;
-}
-
-export type ChangeHandler = (change: PointerChange) => void;
-
-interface PointerUpdatedEvent {
-    pointer_id: string;
-    blob_id: string;
-    version: string;
-    updated_at_ms: string;
-}
-
-/** Structural shape of a `google.protobuf.Value` (oneof `kind`). */
 interface ProtoValue {
     kind:
         | { oneofKind: 'nullValue' }
@@ -59,18 +47,6 @@ function unwrapValue(value: ProtoValue): unknown {
     }
 }
 
-const DEFAULT_GRPC_URL: Record<WalrusNetwork, string> = {
-    testnet: 'https://fullnode.testnet.sui.io:443',
-    mainnet: 'https://fullnode.mainnet.sui.io:443',
-};
-
-// Native gRPC wants a bare host:port (no scheme); default to the network fullnode.
-function toGrpcHost(network: WalrusNetwork, url?: string): string {
-    const raw = url ?? DEFAULT_GRPC_URL[network];
-    const host = raw.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-    return /:\d+$/.test(host) ? host : `${host}:443`;
-}
-
 const READ_MASK = {
     paths: [
         'sequence_number',
@@ -79,51 +55,56 @@ const READ_MASK = {
     ],
 };
 
-// Cap how many checkpoints we backfill after a long disconnect before jumping to
-// the live edge.
 const MAX_BACKFILL = 500;
 
 type CheckpointData = { transactions?: { events?: { events?: unknown[] } }[] };
 
-export interface PointerWatcherOptions {
+// Native gRPC wants a bare host:port (no scheme); default to the network fullnode.
+function toGrpcHost(network: WalrusNetwork, url?: string): string {
+    const raw = url ?? `fullnode.${network}.sui.io:443`;
+    const host = raw.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    return /:\d+$/.test(host) ? host : `${host}:443`;
+}
+
+export interface TailedEvent {
+    eventType: string;
+    json: Record<string, unknown>;
+    checkpoint: number;
+}
+
+export interface CheckpointTailerOptions {
     network: WalrusNetwork;
+    /** Override the gRPC host (scheme optional). Defaults to the network fullnode. */
     url?: string;
-    walrusJsonPackageId: string;
-    pointers: PointerIds;
-    /** Reconnect backoff in ms after a stream error/end (default 2000). */
+    /** Fully-qualified event types to emit (e.g. `${pkg}::intake::JobPaid`). */
+    eventTypes: Iterable<string>;
+    onEvent: (event: TailedEvent) => void;
+    /** Called once per processed checkpoint (live + backfilled) with its sequence. */
+    onCheckpoint?: (sequence: number) => void;
     reconnectMs?: number;
-    /**
-     * Resume from this checkpoint: the first stream response backfills everything
-     * after it. Defaults to the current checkpoint height (only future changes).
-     */
+    /** Resume from this checkpoint; the first response backfills everything after it. */
     fromCheckpoint?: number;
 }
 
-/**
- * Watches `pointer::PointerUpdated` via the Sui gRPC checkpoint stream
- * (`subscribeCheckpoints`) and reports which database changed.
- *
- * Uses the native gRPC transport (HTTP/2 via `@grpc/grpc-js`, with keepalive)
- * because the fullnode's grpc-web gateway caps long-lived streams at ~30s. The
- * cursor is seeded from `getServiceInfo` and gaps across reconnects are backfilled
- * with `getCheckpoint`, so no event is lost even if the stream blips.
- */
-export class PointerWatcher {
+export class CheckpointTailer {
     #client: SuiGrpcClient;
-    #eventType: string;
-    #pointerToDb: Map<string, DbName>;
+    #host: string;
+    #types: Set<string>;
+    #onEvent: (event: TailedEvent) => void;
+    #onCheckpoint: ((sequence: number) => void) | undefined;
     #reconnectMs: number;
     #running = false;
     #abort: AbortController | undefined;
-    #handlers = new Set<ChangeHandler>();
     #lastCursor: bigint | undefined;
 
-    constructor(options: PointerWatcherOptions) {
+    constructor(options: CheckpointTailerOptions) {
+        this.#host = toGrpcHost(options.network, options.url);
         this.#client = new SuiGrpcClient({
             network: options.network,
             transport: new GrpcTransport({
-                host: toGrpcHost(options.network, options.url),
+                host: this.#host,
                 channelCredentials: ChannelCredentials.createSsl(),
+                // Keepalive PINGs keep the HTTP/2 connection healthy on idle gaps.
                 clientOptions: {
                     'grpc.keepalive_time_ms': 20_000,
                     'grpc.keepalive_timeout_ms': 10_000,
@@ -131,28 +112,23 @@ export class PointerWatcher {
                 },
             }),
         });
-        this.#eventType = `${options.walrusJsonPackageId}::pointer::PointerUpdated`;
+        this.#types = new Set(options.eventTypes);
+        this.#onEvent = options.onEvent;
+        this.#onCheckpoint = options.onCheckpoint;
         this.#reconnectMs = options.reconnectMs ?? 2000;
-        this.#pointerToDb = new Map(
-            (Object.entries(options.pointers) as [DbName, string][]).map(([db, id]) => [id, db]),
-        );
         if (options.fromCheckpoint !== undefined) this.#lastCursor = BigInt(options.fromCheckpoint);
     }
 
-    /** Subscribe to changes. Returns an unsubscribe function. */
-    on(handler: ChangeHandler): () => void {
-        this.#handlers.add(handler);
-        return () => this.#handlers.delete(handler);
+    get host(): string {
+        return this.#host;
     }
 
-    /** Begin streaming. Idempotent. */
     start(): void {
         if (this.#running) return;
         this.#running = true;
         void this.#run();
     }
 
-    /** Stop streaming. */
     stop(): void {
         this.#running = false;
         this.#abort?.abort();
@@ -160,15 +136,10 @@ export class PointerWatcher {
     }
 
     async #run(): Promise<void> {
-        // Seed the cursor with the current checkpoint height so the first stream
-        // response backfills every checkpoint since start — including writes made
-        // before the stream settled.
         if (this.#lastCursor === undefined) {
             try {
                 const { response } = await this.#client.ledgerService.getServiceInfo({});
-                if (response.checkpointHeight !== undefined) {
-                    this.#lastCursor = response.checkpointHeight;
-                }
+                if (response.checkpointHeight !== undefined) this.#lastCursor = response.checkpointHeight;
             } catch {
                 // Fall back to starting at the live edge.
             }
@@ -190,9 +161,9 @@ export class PointerWatcher {
                     this.#lastCursor = res.cursor;
                 }
             } catch (error) {
-                if (!this.#running) return; // aborted by stop()
+                if (!this.#running) return;
                 console.error(
-                    '[watch] checkpoint stream error:',
+                    '[indexer] checkpoint stream error (will reconnect):',
                     error instanceof Error ? error.message : error,
                 );
             }
@@ -200,12 +171,9 @@ export class PointerWatcher {
         }
     }
 
-    /** Fetch and process checkpoints [from, to] missed during a disconnect. */
     async #backfill(from: bigint, to: bigint, abort: AbortController): Promise<void> {
         if (to - from + 1n > BigInt(MAX_BACKFILL)) {
-            console.error(
-                `[watch] gap of ${to - from + 1n} checkpoints too large; skipping backfill`,
-            );
+            console.error(`[indexer] gap of ${to - from + 1n} checkpoints too large; skipping backfill`);
             return;
         }
         for (let seq = from; seq <= to && this.#running; seq++) {
@@ -220,27 +188,18 @@ export class PointerWatcher {
         }
     }
 
-    #scan(checkpoint: CheckpointData | undefined, cursor: number): void {
+    #scan(checkpoint: CheckpointData | undefined, sequence: number): void {
         for (const tx of checkpoint?.transactions ?? []) {
             for (const ev of tx.events?.events ?? []) {
                 const event = ev as { eventType?: string; json?: ProtoValue };
-                if (event.eventType !== this.#eventType || !event.json) continue;
-                this.#emit(unwrapValue(event.json) as PointerUpdatedEvent, cursor);
+                if (!event.eventType || !this.#types.has(event.eventType) || !event.json) continue;
+                this.#onEvent({
+                    eventType: event.eventType,
+                    json: (unwrapValue(event.json) as Record<string, unknown>) ?? {},
+                    checkpoint: sequence,
+                });
             }
         }
-    }
-
-    #emit(parsed: PointerUpdatedEvent, checkpoint: number): void {
-        const db = this.#pointerToDb.get(parsed.pointer_id);
-        if (!db) return; // an unrelated pointer
-        const change: PointerChange = {
-            db,
-            pointerId: parsed.pointer_id,
-            blobId: parsed.blob_id,
-            version: Number(parsed.version),
-            updatedAtMs: Number(parsed.updated_at_ms),
-            checkpoint,
-        };
-        for (const handler of this.#handlers) handler(change);
+        this.#onCheckpoint?.(sequence);
     }
 }

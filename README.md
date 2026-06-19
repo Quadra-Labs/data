@@ -17,6 +17,7 @@ agent — enforced on chain by `quadra::job_access::seal_approve`.
 | `agents`              | Walrus, public | Agent identity registry (`wallet, owner, category`). |
 | `delayed_failed_jobs` | Walrus, public | Append-only log of delayed/failed jobs.              |
 | `job_templates`       | Walrus, public | Exact lookup by template id.                         |
+| `eval_engines`        | Walrus, public | `evaluator_id` -> enclave HTTP URL (+ optional on-chain id). |
 | `job_scheduler`       | Walrus, public | `job_id -> expiry`; enumerate due jobs each epoch.   |
 | `job_results_index`   | Walrus, public | `job_id -> blobId` of the sealed result.             |
 | job results           | Seal, private  | One encrypted blob per job; user + agent only.       |
@@ -26,7 +27,7 @@ agent — enforced on chain by `quadra::job_access::seal_approve`.
 ```bash
 npm install
 cp .env.example .env      # set DATA_SECRET_KEY (+ DATA_NETWORK) only
-npm run setup             # publishes both Move packages + creates the 6 pointers,
+npm run setup             # publishes both Move packages + creates the 7 pointers,
                           # then writes every other value back into .env
 ```
 
@@ -39,7 +40,10 @@ with Mysten's allowlisted testnet key servers. On mainnet, supply those ids
 yourself from the Seal verified key servers list.
 
 Already have published packages? Use the lower-level `npm run bootstrap` instead,
-which only creates the six pointers from an existing `WALRUS_JSON_PACKAGE_ID`.
+which only creates the seven pointers from an existing `WALRUS_JSON_PACKAGE_ID`.
+
+For existing environments that predate `eval_engines`, run
+`npm run bootstrap-eval-engines` once to create only that pointer.
 
 ## Library
 
@@ -71,7 +75,21 @@ server never decrypts — it only serves ciphertext.
 ```bash
 npm run serve     # REST writer  (port PORT=8787)
 npm run watch     # gRPC watcher + SSE  (port WATCH_PORT=8788)
+npm run indexer   # off-chain index: tails events into SQLite (INDEXER_DB_PATH)
 ```
+
+`npm run indexer` keeps a SQLite mirror (`INDEXER_DB_PATH`, default
+`quadra-index.db`) of the agent registry, scores, and jobs so the gateway can serve
+fast filtered/sorted/paginated reads (`GET /agents`, `/agents/query`,
+`/agents/:wallet`, `/agents/:wallet/jobs`) instead of enumerating the chain and
+fetching Walrus blobs per request. It cold-starts by seeding identity + scores from
+the registry/Walrus doc + historical events, then tails the checkpoint stream
+forward over native gRPC (HTTP/2 via `@grpc/grpc-js`), resuming from a persisted
+cursor. Native gRPC is required: the fullnode's grpc-web gateway caps long-lived
+streams at ~30s, while the HTTP/2 stream runs indefinitely. The gateway opens the
+same file read-only (WAL) and falls back to live reads when the index is absent or
+empty, so it runs with or without the indexer. Run it alongside `npm run serve` on
+the same host.
 
 REST writer = the **write gateway** (`server.ts`): the sole holder of
 `DATA_SECRET_KEY` and the only on-chain writer. `/agent-scores`, `/delayed-failed`,
@@ -87,6 +105,7 @@ superuser **except** for `job_results` (agent-signature only).
 | `POST /agent-scores/record`, `POST /delayed-failed` | scheduler, admin                        |
 | `PUT /scheduler/:id`                                | intake, admin · `DELETE /scheduler/:id` | scheduler, admin |
 | `PUT /templates`                                    | admin                                   |
+| `GET /eval-engines`, `PUT /eval-engines/:id`, `DELETE /eval-engines/:id` | admin (reads open) |
 | `POST /job-results` (sealed envelope)               | agent signature (registered) only       |
 
 `GET /agents` / `/agents/:wallet` read the **on-chain** `agent::AgentRegistry`;

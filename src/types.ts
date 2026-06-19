@@ -13,10 +13,12 @@ export type Category = 'finance' | 'prediction';
 /** Which Quadra database a value belongs to. Used for routing and watch events. */
 export type DbName =
     | 'agent_scores'
+    | 'agent_endpoints'
     | 'delayed_failed_jobs'
     | 'job_templates'
     | 'job_scheduler'
-    | 'job_results_index';
+    | 'job_results_index'
+    | 'eval_engines';
 
 // --- agent_scores ----------------------------------------------------------
 
@@ -36,6 +38,21 @@ export interface AgentScoresDoc {
 }
 
 // Agent identity now lives on chain (`agent::AgentRegistry`); see `OnchainAgents`.
+
+// --- agent_endpoints -------------------------------------------------------
+
+/** Where to reach a live agent (its public chat/ping URL). Self-published by the
+ * agent (signed), so the web can route a chat to it and check it is online. */
+export interface AgentEndpoint {
+    wallet: string;
+    url: string;
+    updated_at: number;
+}
+
+export interface AgentEndpointsDoc {
+    endpoints: Record<string, AgentEndpoint>;
+    updated_at: number;
+}
 
 // --- delayed_failed_jobs ---------------------------------------------------
 
@@ -67,29 +84,52 @@ export interface DelayedFailedJobsDoc {
  */
 export interface JobTemplate {
     id: string;
-    category: Category;
+    /** Free label ("finance" | "prediction" | "content" | ...). Scored agents are
+     * grouped by category in the UI; scoreless ones by the `scoreless` flag. */
+    category: string;
     description: string;
     output: Record<string, string>;
     /** The evaluation engine's category id (e.g. "price-range-guess"). One enclave
-     * serves one evaluator_id; the scheduler maps it to that engine's URL. */
+     * serves one evaluator_id; the scheduler maps it to that engine's URL.
+     * EMPTY ("") for a scoreless template (no evaluator). */
     evaluator_id: string;
     /**
      * Schema for the start data captured at delivery (field -> type-name), e.g.
      * `{ start_price: 'number' }`. The validator asks the eval engine for it and
-     * intake records it in the scheduler so it survives until scoring.
+     * intake records it in the scheduler so it survives until scoring. Empty `{}`
+     * for a scoreless template.
      */
     start_data_template: Record<string, string>;
-    /** Shortest lifetime this template accepts, in milliseconds (e.g. 60000 = 1 min). */
+    /** Shortest lifetime this template accepts, in milliseconds (e.g. 60000 = 1 min).
+     * 0 for a scoreless template (no scoring window). */
     minimum_lifetime: number;
-    /** Asset symbols a job may target (subset of the supported universe). */
+    /** Asset symbols a job may target (subset of the supported universe). Empty for
+     * a scoreless template. */
     allowed_assets: string[];
-    /** When true, the job is paid on delivery (result stored), never validated/scored — no
-     * asset/lifetime/scoring window. Absent/false = a normal scored job. (Friend's intake feature.) */
+    /** Scoreless: the job is paid on delivery and never evaluated/scored. When true,
+     * the scoring fields above are empty and intake skips the validator + scheduling. */
     scoreless?: boolean;
 }
 
 export interface JobTemplatesDoc {
     templates: Record<string, JobTemplate>;
+    updated_at: number;
+}
+
+// --- eval_engines ----------------------------------------------------------
+
+/** One evaluation engine (Nautilus enclave) reachable by HTTP. */
+export interface EvalEngineEntry {
+    evaluator_id: string;
+    /** Base URL for `/validate` and `/process_data`. */
+    url: string;
+    /** On-chain `enclave::Enclave` object id (optional in local dev). */
+    enclave_id?: string;
+    updated_at: number;
+}
+
+export interface EvalEnginesDoc {
+    engines: Record<string, EvalEngineEntry>;
     updated_at: number;
 }
 

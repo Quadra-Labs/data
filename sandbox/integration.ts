@@ -53,7 +53,12 @@ function check(label: string, cond: boolean): void {
 // Every write commits a brand-new immutable blob and re-points the on-chain
 // pointer at it. Read the pointer back so each write shows its new blob id.
 async function blob(dl: DataLayer, db: DbName): Promise<void> {
-    const p = await dl.clients.wj.readPointer(dl.config.pointers[db]);
+    const pointerId = dl.config.pointers[db];
+    if (!pointerId) {
+        console.log(`    ⛁ ${db}: (no pointer configured)`);
+        return;
+    }
+    const p = await dl.clients.wj.readPointer(pointerId);
     console.log(`    ⛁ ${db}: pointer version ${p.version} -> blob ${p.blobId}`);
 }
 
@@ -152,6 +157,18 @@ async function step1Public(dl: DataLayer, c: Ctx): Promise<void> {
     const readTemplate = await dl.jobTemplates.get(c.template.id);
     got('read back jobTemplates.get("btc_price_5m")', readTemplate);
     check('template round-trips by exact id', readTemplate?.id === c.template.id);
+
+    step('evalEngines.put / get', 'evaluator_id -> enclave HTTP URL for scheduler routing');
+    const evalId = c.template.evaluator_id;
+    act(`put eval engine "${evalId}"`);
+    await dl.evalEngines.put({
+        evaluator_id: evalId,
+        url: 'http://localhost:5200',
+    });
+    await blob(dl, 'eval_engines');
+    const readEngine = await dl.evalEngines.get(evalId);
+    got('read back evalEngines.get(evaluator_id)', readEngine);
+    check('eval engine round-trips by evaluator_id', readEngine?.url === 'http://localhost:5200');
 
     step(
         'jobScheduler.set / due / remove',

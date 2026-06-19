@@ -5,7 +5,7 @@
  *   - publishes the `walrus_json` Move package      -> WALRUS_JSON_PACKAGE_ID
  *   - publishes the `quadra` Move package           -> QUADRA_PACKAGE_ID
  *                                                      + JOB_ACCESS_REGISTRY_ID
- *   - creates the six JsonPointers                   -> POINTER_*
+ *   - creates the seven JsonPointers                   -> POINTER_*
  *   - fills sensible defaults                        -> DATA_EPOCHS, SEAL_THRESHOLD, PORT
  *
  * Everything is signed with YOUR key (no separate sui CLI account). The only
@@ -36,6 +36,7 @@ import { EMPTY_DELAYED_FAILED } from '../src/dbs/delayedFailedJobs.js';
 import { EMPTY_JOB_TEMPLATES } from '../src/dbs/jobTemplates.js';
 import { EMPTY_JOB_SCHEDULER } from '../src/dbs/jobScheduler.js';
 import { EMPTY_JOB_RESULTS_INDEX } from '../src/dbs/jobResultsIndex.js';
+import { EMPTY_EVAL_ENGINES } from '../src/dbs/evalEngines.js';
 
 setGlobalDispatcher(new Agent({ connect: { timeout: 60_000, family: 4 } }));
 
@@ -62,6 +63,7 @@ const POINTER_DBS: { envVar: string; initial: unknown }[] = [
     { envVar: 'POINTER_JOB_TEMPLATES', initial: EMPTY_JOB_TEMPLATES },
     { envVar: 'POINTER_JOB_SCHEDULER', initial: EMPTY_JOB_SCHEDULER },
     { envVar: 'POINTER_JOB_RESULTS_INDEX', initial: EMPTY_JOB_RESULTS_INDEX },
+    { envVar: 'POINTER_EVAL_ENGINES', initial: EMPTY_EVAL_ENGINES },
 ];
 
 /** Parse a `.env` file into an ordered key/value map (ignores comments/blanks). */
@@ -161,7 +163,7 @@ async function main(): Promise<void> {
     console.log(`  JobAccessRegistry: ${jobAccessRegistryId}`);
     console.log(`  AgentRegistry:     ${agentRegistryId}`);
 
-    // 2. Create the six pointers with the freshly published walrus_json package.
+    // 2. Create the seven pointers with the freshly published walrus_json package.
     console.log(`\nCreating ${POINTER_DBS.length} pointers...`);
     const wj = new WalrusJsonClient({
         network,
