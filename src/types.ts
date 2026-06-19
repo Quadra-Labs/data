@@ -83,6 +83,9 @@ export interface JobTemplate {
     minimum_lifetime: number;
     /** Asset symbols a job may target (subset of the supported universe). */
     allowed_assets: string[];
+    /** When true, the job is paid on delivery (result stored), never validated/scored — no
+     * asset/lifetime/scoring window. Absent/false = a normal scored job. (Friend's intake feature.) */
+    scoreless?: boolean;
 }
 
 export interface JobTemplatesDoc {
@@ -134,6 +137,11 @@ export interface JobResult {
     agent: string;
     status: JobStatus;
     job: JobSpec;
+    /** The fixed job params the result was produced against (e.g. prediction's
+     * `{ market_id, target_ts }`). Forwarded to the evaluation engine at scoring for
+     * evaluators that resolve ground truth from params (polymarket-*). Absent for finance
+     * jobs, which resolve from `asset`. */
+    params?: Record<string, string>;
     /** What the agent returned (shape matches the template `output`). */
     agent_result: Record<string, unknown>;
     /** The deterministic data the evaluation engine produced. */
