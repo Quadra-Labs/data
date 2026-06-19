@@ -54,7 +54,7 @@
         "better-sqlite3": "^12.11.1",
         "fastify": "^5.8.5",
         "undici": "^7.0.0",
-        "walrus-json": "file:../walrus-json"
+        "walrus-json": "^0.1.1"
     },
     "devDependencies": {
         "@types/better-sqlite3": "^7.6.13",
