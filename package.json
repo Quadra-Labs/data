@@ -25,6 +25,7 @@
         "format:check": "prettier --check .",
         "setup": "tsx sandbox/setup-env.ts",
         "bootstrap": "tsx src/bootstrap.ts",
+        "print-ids": "tsx scripts/print-ids.ts",
         "bootstrap-eval-engines": "tsx scripts/bootstrap-eval-engines-pointer.ts",
         "register-eval-engine": "tsx scripts/register-eval-engine.ts",
         "seed-eval-engines-from-env": "tsx scripts/seed-eval-engines-from-env.ts",

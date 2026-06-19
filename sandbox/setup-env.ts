@@ -155,15 +155,25 @@ async function main(): Promise<void> {
     );
     const quadra = await publishPackage(client, signer, sender, QUADRA_MOVE, 'quadra');
 
-    const findShared = (suffix: string): string => {
+    // Find an object minted by the quadra publish by its type suffix (shared registries +
+    // owned/shared caps + config alike — objectTypes is keyed by id -> full type).
+    const findCreated = (suffix: string): string => {
         const entry = Object.entries(quadra.objectTypes).find(([, type]) => type.endsWith(suffix));
-        if (!entry) throw new Error(`quadra published but no ${suffix} shared object was found`);
+        if (!entry) throw new Error(`quadra published but no ${suffix} object was found`);
         return entry[0];
     };
-    const jobAccessRegistryId = findShared('::job_access::JobAccessRegistry');
-    const agentRegistryId = findShared('::agent::AgentRegistry');
+    const jobAccessRegistryId = findCreated('::job_access::JobAccessRegistry');
+    const agentRegistryId = findCreated('::agent::AgentRegistry');
+    // Caps + config the engines need: IntakeCap/CompetitionCap are sent to you (the publisher);
+    // IntakeConfig is shared. The intake + competition engines reference these object ids.
+    const intakeCapId = findCreated('::intake::IntakeCap');
+    const intakeConfigId = findCreated('::intake::IntakeConfig');
+    const competitionCapId = findCreated('::competition::CompetitionCap');
     console.log(`  JobAccessRegistry: ${jobAccessRegistryId}`);
     console.log(`  AgentRegistry:     ${agentRegistryId}`);
+    console.log(`  IntakeCap:         ${intakeCapId}`);
+    console.log(`  IntakeConfig:      ${intakeConfigId}`);
+    console.log(`  CompetitionCap:    ${competitionCapId}`);
 
     // 2. Create the seven pointers with the freshly published walrus_json package.
     console.log(`\nCreating ${POINTER_DBS.length} pointers...`);
@@ -199,6 +209,11 @@ async function main(): Promise<void> {
         `QUADRA_PACKAGE_ID=${quadra.packageId}`,
         `JOB_ACCESS_REGISTRY_ID=${jobAccessRegistryId}`,
         `AGENT_REGISTRY_ID=${agentRegistryId}`,
+        '',
+        '# Caps + config the intake/competition engines reference (you own the caps).',
+        `INTAKE_CAP_ID=${intakeCapId}`,
+        `INTAKE_CONFIG_ID=${intakeConfigId}`,
+        `COMPETITION_CAP_ID=${competitionCapId}`,
         '',
         '# External Seal infrastructure — paste from the Seal verified key servers list.',
         `SEAL_KEY_SERVER_IDS=${sealServers}`,
