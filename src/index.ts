@@ -124,7 +124,12 @@ export { JobScheduler, type ScheduledJob } from './dbs/jobScheduler.js';
 export { JobResultsIndex } from './dbs/jobResultsIndex.js';
 export { EvalEngines, EMPTY_EVAL_ENGINES } from './dbs/evalEngines.js';
 export { PointerDoc } from './dbs/base.js';
-export { JobResults, type JobResultsOptions } from './seal.js';
+export { JobResults, type JobResultsOptions, type ResultReader } from './seal.js';
+// Re-export `Transaction` so a consumer that builds a tx for this package's exposed
+// `clients.sui` uses the SAME physical `@mysten/sui` copy as the data layer — avoiding the
+// duplicate-identity clash a `file:`-linked consumer hits if it imports `Transaction` from its
+// own `@mysten/sui`.
+export { Transaction } from '@mysten/sui/transactions';
 export { PointerWatcher } from './watch.js';
 export type { PointerChange, ChangeHandler, PointerWatcherOptions } from './watch.js';
 

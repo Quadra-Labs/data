@@ -1,4 +1,3 @@
-import type { Signer } from '@mysten/sui/cryptography';
 import { Transaction } from '@mysten/sui/transactions';
 import { SealClient, SessionKey, type SealCompatibleClient } from '@mysten/seal';
 import type { JsonValue, WalrusJsonClient } from 'walrus-json';
@@ -6,6 +5,19 @@ import type { JsonValue, WalrusJsonClient } from 'walrus-json';
 import type { JobResult, SealedResultBlob } from './types.js';
 import type { JobResultsIndex } from './dbs/jobResultsIndex.js';
 import { withWriteLock } from './writeLock.js';
+
+/**
+ * The minimal signer surface `decrypt` needs: the requester's Sui address and the ability to sign
+ * the Seal SessionKey's personal message. Declared STRUCTURALLY (not as `@mysten/sui`'s `Signer`)
+ * so this package's PUBLIC API does not pin a consumer to a specific physical `@mysten/sui` copy.
+ * A `file:`-linked consumer (e.g. the scheduler/competition engines) has its own `@mysten/sui`; a
+ * nominal `Signer` param would make those two copies clash with a duplicate-identity type error,
+ * even though they are the same version. Any keypair with these two methods (e.g. `Ed25519Keypair`,
+ * which `Signer` requires) matches structurally, so consumers pass their own signer unchanged. */
+export interface ResultReader {
+    toSuiAddress(): string;
+    signPersonalMessage(message: Uint8Array): Promise<{ signature: string }>;
+}
 
 /** Backdate the decryption SessionKey by this much so a local clock slightly AHEAD of the Seal
  * key servers does not make the key look future-dated (the servers reject that as "Session key
@@ -92,7 +104,7 @@ export class JobResults {
     }
 
     /** Decrypt a job result. `requester` must be the job's user or agent. */
-    async decrypt(jobId: string, requester: Signer): Promise<JobResult> {
+    async decrypt(jobId: string, requester: ResultReader): Promise<JobResult> {
         const sealed = await this.fetchSealed(jobId);
         const encrypted = Uint8Array.from(Buffer.from(sealed.enc, 'base64'));
 
