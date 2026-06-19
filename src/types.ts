@@ -177,6 +177,11 @@ export interface JobResult {
     agent: string;
     status: JobStatus;
     job: JobSpec;
+    /** The fixed job params the result was produced against (e.g. prediction's
+     * `{ market_id, target_ts }`). Forwarded to the evaluation engine at scoring for
+     * evaluators that resolve ground truth from params (polymarket-*). Absent for finance
+     * jobs, which resolve from `asset`. */
+    params?: Record<string, string>;
     /** What the agent returned (shape matches the template `output`). */
     agent_result: Record<string, unknown>;
     /** The deterministic data the evaluation engine produced. */
