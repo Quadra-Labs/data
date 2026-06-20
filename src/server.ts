@@ -248,12 +248,17 @@ function startServer(): void {
     app.listen({ port: dl.config.port, host: '0.0.0.0' })
         .then((address) => {
             app.log.info(`Quadra data gateway listening on ${address}`);
-            // Warm the templates cache so the first agent's GET /templates is fast: the slow
-            // Walrus resolve happens here, once, in the background — not on a user request.
-            void dl.jobTemplates
-                .list()
-                .then((t) => app.log.info(`templates cache warmed (${t.length} template(s))`))
-                .catch((err) => app.log.warn(`templates cache warm-up failed: ${err}`));
+            // Warm EVERY cached read doc so the first request for any of them is served from memory:
+            // the slow Walrus resolves happen here, once, in the background — not on a user request.
+            void dl
+                .warmCaches()
+                .then((r) => {
+                    const ok = r.filter((x) => x.ok).map((x) => x.db);
+                    const failed = r.filter((x) => !x.ok).map((x) => x.db);
+                    app.log.info(`caches warmed: ${ok.join(', ') || 'none'}`);
+                    if (failed.length > 0) app.log.warn(`cache warm-up failed for: ${failed.join(', ')}`);
+                })
+                .catch((err) => app.log.warn(`cache warm-up failed: ${err}`));
         })
         .catch((error) => {
             app.log.error(error);

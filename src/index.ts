@@ -73,6 +73,48 @@ export class DataLayer {
             threshold: config.sealThreshold,
             epochs,
         });
+
+        // Serve every pointer-backed READ from an in-memory stale-while-revalidate cache so a slow
+        // Walrus resolve (~10s) never lands on a request. Writes go THROUGH this gateway and
+        // PointerDoc is write-through, so the gateway's own writes stay instantly consistent;
+        // cross-process writes (e.g. seed scripts) converge within the TTL. jobTemplates keeps its
+        // dedicated TEMPLATES_CACHE_TTL_MS (set in its constructor); enable the rest here.
+        const readTtl = config.readCacheTtlMs;
+        this.evalEngines.enableCache(readTtl);
+        this.agentScores.enableCache(readTtl);
+        this.jobScheduler.enableCache(readTtl);
+        this.jobResultsIndex.enableCache(readTtl);
+        this.delayedFailedJobs.enableCache(readTtl);
+        this.agentEndpoints?.enableCache(readTtl);
+    }
+
+    /**
+     * Resolve every cached read doc once, in parallel, so the first real request for ANY of them is
+     * served from memory instead of paying the cold Walrus resolve. Call it on gateway boot. Best
+     * effort: a doc that fails to warm just resolves lazily on its first read. NEVER throws.
+     */
+    async warmCaches(): Promise<{ db: string; ok: boolean }[]> {
+        const docs: [string, { prime(): Promise<unknown> }][] = [
+            ['job_templates', this.jobTemplates],
+            ['eval_engines', this.evalEngines],
+            ['agent_scores', this.agentScores],
+            ['job_scheduler', this.jobScheduler],
+            ['job_results_index', this.jobResultsIndex],
+            ['delayed_failed_jobs', this.delayedFailedJobs],
+            ...(this.agentEndpoints
+                ? ([['agent_endpoints', this.agentEndpoints]] as [string, { prime(): Promise<unknown> }][])
+                : []),
+        ];
+        return Promise.all(
+            docs.map(async ([db, doc]) => {
+                try {
+                    await doc.prime();
+                    return { db, ok: true };
+                } catch {
+                    return { db, ok: false };
+                }
+            }),
+        );
     }
 
     /** Build a {@link DataLayer} from `process.env` (writer; needs `DATA_SECRET_KEY`). */

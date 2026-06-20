@@ -26,9 +26,9 @@ export class PointerDoc<T> {
          * When > 0, `read()` serves a cached value for this many ms, and keeps serving the stale
          * value while a single background refresh runs (so a slow `resolvePointer` never blocks a
          * reader after the first). Writes refresh the cache in place. 0 (default) disables caching:
-         * every read resolves the pointer fresh — correct for write-heavy / freshness-critical docs.
+         * every read resolves the pointer fresh. Set after construction with {@link enableCache}.
          */
-        protected readonly cacheTtlMs: number = 0,
+        protected cacheTtlMs: number = 0,
     ) {}
 
     /** The current value of the document. */
@@ -44,6 +44,26 @@ export class PointerDoc<T> {
         }
         // Cold cache: the first reader waits for the resolve; concurrent readers share it.
         return this.#refresh();
+    }
+
+    /**
+     * Turn on (or retune) stale-while-revalidate caching after construction. The gateway enables
+     * this for every read-served pointer doc so reads come from memory; writes stay write-through.
+     */
+    enableCache(ttlMs: number): void {
+        this.cacheTtlMs = Math.max(0, ttlMs);
+    }
+
+    /**
+     * Force-resolve the pointer now and store it in the cache, returning the fresh value. Used to
+     * WARM the cache on boot (the slow Walrus resolve happens here, in the background, never on a
+     * reader's request) and to invalidate it on an external pointer change. When caching is off it
+     * just resolves and returns.
+     */
+    async prime(): Promise<T> {
+        const value = await this.#resolve();
+        this.#store(value);
+        return value;
     }
 
     async #resolve(): Promise<T> {
