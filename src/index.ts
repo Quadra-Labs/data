@@ -54,7 +54,12 @@ export class DataLayer {
             registryId: config.agentRegistryId,
         });
         this.delayedFailedJobs = new DelayedFailedJobs(wj, pointers.delayed_failed_jobs, epochs);
-        this.jobTemplates = new JobTemplates(wj, pointers.job_templates, epochs);
+        this.jobTemplates = new JobTemplates(
+            wj,
+            pointers.job_templates,
+            epochs,
+            config.templatesCacheTtlMs,
+        );
         this.jobScheduler = new JobScheduler(wj, pointers.job_scheduler, epochs);
         this.jobResultsIndex = new JobResultsIndex(wj, pointers.job_results_index, epochs);
         this.evalEngines = new EvalEngines(wj, pointers.eval_engines, epochs);

@@ -246,7 +246,15 @@ function startServer(): void {
     );
 
     app.listen({ port: dl.config.port, host: '0.0.0.0' })
-        .then((address) => app.log.info(`Quadra data gateway listening on ${address}`))
+        .then((address) => {
+            app.log.info(`Quadra data gateway listening on ${address}`);
+            // Warm the templates cache so the first agent's GET /templates is fast: the slow
+            // Walrus resolve happens here, once, in the background — not on a user request.
+            void dl.jobTemplates
+                .list()
+                .then((t) => app.log.info(`templates cache warmed (${t.length} template(s))`))
+                .catch((err) => app.log.warn(`templates cache warm-up failed: ${err}`));
+        })
         .catch((error) => {
             app.log.error(error);
             process.exit(1);

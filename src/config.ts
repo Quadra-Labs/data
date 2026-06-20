@@ -34,6 +34,8 @@ export interface DataLayerConfig {
     port: number;
     /** Port for the separate watch (gRPC stream + SSE) service. */
     watchPort: number;
+    /** Stale-while-revalidate TTL (ms) for GET /templates. 0 disables the cache. */
+    templatesCacheTtlMs: number;
     pointers: PointerIds;
 }
 
@@ -82,6 +84,7 @@ export function loadConfig(): DataLayerConfig {
         watchReconnectMs: optionalNumber('WATCH_RECONNECT_MS', 2000),
         port: optionalNumber('PORT', 8787),
         watchPort: optionalNumber('WATCH_PORT', 8788),
+        templatesCacheTtlMs: optionalNumber('TEMPLATES_CACHE_TTL_MS', 30_000),
         pointers: {
             agent_scores: required('POINTER_AGENT_SCORES'),
             delayed_failed_jobs: required('POINTER_DELAYED_FAILED'),

@@ -10,8 +10,11 @@ export const EMPTY_JOB_TEMPLATES: JobTemplatesDoc = { templates: {}, updated_at:
  * template by id to know exactly what to return.
  */
 export class JobTemplates extends PointerDoc<JobTemplatesDoc> {
-    constructor(wj: WalrusJsonClient, pointerId: string, epochs: number) {
-        super(wj, pointerId, epochs);
+    // Templates change rarely (admin PUT, write-through) but GET /templates is hit on every
+    // agent boot, and resolving the pointer from Walrus is slow — so this doc opts into the
+    // stale-while-revalidate cache (cacheTtlMs). Other pointer docs leave it at 0 (no cache).
+    constructor(wj: WalrusJsonClient, pointerId: string, epochs: number, cacheTtlMs = 0) {
+        super(wj, pointerId, epochs, cacheTtlMs);
     }
 
     /** Exact lookup by template id. */
