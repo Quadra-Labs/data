@@ -10,3 +10,6 @@ dist
 # Local secrets / config (incl. .env.bak) — keep .env.example tracked.
 .env*
 !.env.example
+
+# local-only seed scripts (may contain keys) — never commit
+*.local.ts
