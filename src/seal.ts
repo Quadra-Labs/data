@@ -4,7 +4,12 @@ import type { JsonValue, WalrusJsonClient } from 'walrus-json';
 
 import type { JobResult, SealedResultBlob } from './types.js';
 import type { JobResultsIndex } from './dbs/jobResultsIndex.js';
+import type { OffchainStore } from './offchain/store.js';
+import type { FlushWorker, ResultFlusher } from './offchain/flushWorker.js';
 import { withWriteLock } from './writeLock.js';
+
+/** Prefix of the synthetic blob id returned while a sealed result is still pending on Walrus. */
+const PENDING_BLOB_PREFIX = 'pending:';
 
 /**
  * The minimal signer surface `decrypt` needs: the requester's Sui address and the ability to sign
@@ -54,11 +59,23 @@ export interface JobResultsOptions {
  * `store` (encrypt) needs no key; `decrypt` needs the user's/agent's own key, so
  * it runs client-side, not on the server.
  */
-export class JobResults {
+export class JobResults implements ResultFlusher {
     #o: JobResultsOptions;
+    // Present once the gateway opts results into write-behind. Absent = synchronous writes.
+    #wb?: { store: OffchainStore; worker: FlushWorker };
 
     constructor(options: JobResultsOptions) {
         this.#o = options;
+    }
+
+    /**
+     * Opt sealed-result storage into write-behind: `storeSealed` records the envelope durably and
+     * returns at once; the worker writes the Walrus blob and indexes it later. Registers this as
+     * the worker's result flusher.
+     */
+    enableWriteBehind(store: OffchainStore, worker: FlushWorker): void {
+        this.#wb = { store, worker };
+        worker.setResultFlusher(this);
     }
 
     /** Encrypt and store a result, then index it. */
@@ -87,17 +104,49 @@ export class JobResults {
     /**
      * Store a pre-sealed envelope (the agent encrypted client-side). The gateway
      * never sees plaintext — it only writes the ciphertext blob and indexes it.
+     *
+     * Write-behind (gateway): records the envelope durably and returns instantly with a synthetic
+     * `pending:<jobId>` blob id; the worker writes the Walrus blob and indexes the real id later.
+     * The envelope is fetchable immediately ({@link fetchSealed} serves it from the store), so the
+     * caller never waits on the Walrus write. Synchronous (no store): the original path.
      */
     async storeSealed(sealed: SealedResultBlob): Promise<{ blobId: string }> {
+        const wb = this.#wb;
+        if (!wb) {
+            const { blobId } = await withWriteLock(this.#o.wj, () =>
+                this.#o.wj.writeJson(sealed as unknown as JsonValue, { epochs: this.#o.epochs }),
+            );
+            await this.#o.index.set(sealed.job_id, blobId);
+            return { blobId };
+        }
+        wb.store.putPendingResult(sealed.job_id, sealed, Date.now());
+        wb.worker.pokeResult(sealed.job_id);
+        return { blobId: `${PENDING_BLOB_PREFIX}${sealed.job_id}` };
+    }
+
+    /**
+     * Write a held sealed envelope to Walrus and index it (called by the worker). Throws on
+     * failure so the worker retries. The index write is itself write-behind, so it returns at
+     * once and is flushed on its own.
+     */
+    async flushResult(jobId: string): Promise<void> {
+        const wb = this.#wb;
+        if (!wb) return;
+        const pending = wb.store.getPendingResult(jobId);
+        if (!pending || pending.flushed) return;
         const { blobId } = await withWriteLock(this.#o.wj, () =>
-            this.#o.wj.writeJson(sealed as unknown as JsonValue, { epochs: this.#o.epochs }),
+            this.#o.wj.writeJson(pending.sealed as unknown as JsonValue, { epochs: this.#o.epochs }),
         );
-        await this.#o.index.set(sealed.job_id, blobId);
-        return { blobId };
+        await this.#o.index.set(jobId, blobId);
+        wb.store.markResultFlushed(jobId, blobId);
     }
 
     /** Fetch the raw sealed envelope for a job (ciphertext only, no key needed). */
     async fetchSealed(jobId: string): Promise<SealedResultBlob> {
+        // Serve a still-pending envelope straight from the store so a result is fetchable the
+        // instant it is stored, before its Walrus blob is durable.
+        const pending = this.#wb?.store.getPendingResult(jobId);
+        if (pending && !pending.flushed) return pending.sealed;
         const blobId = await this.#o.index.get(jobId);
         if (!blobId) throw new Error(`No result indexed for job ${jobId}`);
         return (await this.#o.wj.readJson(blobId)) as unknown as SealedResultBlob;

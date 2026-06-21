@@ -245,6 +245,29 @@ function startServer(): void {
         async (req) => dl.jobResults.storeSealed(req.body as SealedResultBlob),
     );
 
+    // Flush any pending writes and release resources, then exit. Registered for SIGINT/SIGTERM so
+    // a restart does not strand un-flushed writes (they would still be recovered on next boot from
+    // the durable store, but draining now keeps the on-chain lag minimal).
+    let shuttingDown = false;
+    const shutdown = async (signal: string): Promise<void> => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        app.log.info(`${signal} received, flushing write-behind queue...`);
+        try {
+            if (dl.writeBehind) {
+                await dl.writeBehind.worker.stop();
+                dl.writeBehind.store.close();
+            }
+            await app.close();
+        } catch (err) {
+            app.log.warn(`shutdown error: ${err}`);
+        } finally {
+            process.exit(0);
+        }
+    };
+    process.once('SIGINT', () => void shutdown('SIGINT'));
+    process.once('SIGTERM', () => void shutdown('SIGTERM'));
+
     app.listen({ port: dl.config.port, host: '0.0.0.0' })
         .then((address) => {
             app.log.info(`Quadra data gateway listening on ${address}`);
@@ -258,7 +281,17 @@ function startServer(): void {
                     app.log.info(`caches warmed: ${ok.join(', ') || 'none'}`);
                     if (failed.length > 0) app.log.warn(`cache warm-up failed for: ${failed.join(', ')}`);
                 })
-                .catch((err) => app.log.warn(`cache warm-up failed: ${err}`));
+                .catch((err) => app.log.warn(`cache warm-up failed: ${err}`))
+                .finally(() => {
+                    // Start the background flush worker AFTER warm reconciles the store against
+                    // chain, so it flushes the right baselines (and recovers a prior crash's queue).
+                    if (dl.writeBehind) {
+                        dl.writeBehind.worker.start();
+                        app.log.info('write-behind ON: writes return instantly, flushed on-chain in the background');
+                    } else {
+                        app.log.info('write-behind OFF (WRITE_BEHIND=0): writes commit synchronously on-chain');
+                    }
+                });
         })
         .catch((error) => {
             app.log.error(error);

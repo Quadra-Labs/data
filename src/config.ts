@@ -39,6 +39,10 @@ export interface DataLayerConfig {
     /** Stale-while-revalidate TTL (ms) for every OTHER read-served pointer doc (eval-engines,
      *  scores, scheduler, results index, endpoints, delayed-failed). 0 disables their cache. */
     readCacheTtlMs: number;
+    /** SQLite file backing the write-behind store (relative to the gateway's working dir). */
+    offchainDbPath: string;
+    /** Periodic retry/recovery cadence (ms) for the background on-chain flush worker. */
+    writeBehindSweepMs: number;
     pointers: PointerIds;
 }
 
@@ -89,6 +93,8 @@ export function loadConfig(): DataLayerConfig {
         watchPort: optionalNumber('WATCH_PORT', 8788),
         templatesCacheTtlMs: optionalNumber('TEMPLATES_CACHE_TTL_MS', 30_000),
         readCacheTtlMs: optionalNumber('DATA_READ_CACHE_TTL_MS', 30_000),
+        offchainDbPath: process.env.OFFCHAIN_DB_PATH ?? 'quadra-writeback.db',
+        writeBehindSweepMs: optionalNumber('WRITE_BEHIND_SWEEP_MS', 5_000),
         pointers: {
             agent_scores: required('POINTER_AGENT_SCORES'),
             delayed_failed_jobs: required('POINTER_DELAYED_FAILED'),

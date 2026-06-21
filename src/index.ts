@@ -16,6 +16,16 @@ import { JobResultsIndex } from './dbs/jobResultsIndex.js';
 import { EvalEngines } from './dbs/evalEngines.js';
 import { JobResults } from './seal.js';
 import { PointerWatcher } from './watch.js';
+import { OffchainStore } from './offchain/store.js';
+import { FlushWorker } from './offchain/flushWorker.js';
+import { KeyedLock } from './offchain/keyedLock.js';
+
+/** The write-behind collaborators the gateway injects so writes return before the on-chain flush. */
+export interface WriteBehind {
+    store: OffchainStore;
+    worker: FlushWorker;
+    lock: KeyedLock;
+}
 
 /**
  * The Quadra data layer: one handle to every database, sharing a single Walrus +
@@ -37,8 +47,10 @@ export class DataLayer {
     readonly jobResultsIndex: JobResultsIndex;
     readonly evalEngines: EvalEngines;
     readonly jobResults: JobResults;
+    /** Present when write-behind is on: the durable store + background flush worker. */
+    readonly writeBehind?: WriteBehind;
 
-    constructor(config: DataLayerConfig, clients: Clients) {
+    constructor(config: DataLayerConfig, clients: Clients, writeBehind?: WriteBehind) {
         this.config = config;
         this.clients = clients;
 
@@ -86,6 +98,24 @@ export class DataLayer {
         this.jobResultsIndex.enableCache(readTtl);
         this.delayedFailedJobs.enableCache(readTtl);
         this.agentEndpoints?.enableCache(readTtl);
+
+        // Write-behind: route every write through the durable off-chain store + background flush
+        // worker so the request path never waits on a Walrus/Sui commit. Injected only by the
+        // gateway (fromEnv); read-only layers (forReads) and tests keep synchronous writes.
+        if (writeBehind) {
+            this.writeBehind = writeBehind;
+            const docs = [
+                this.agentScores,
+                this.delayedFailedJobs,
+                this.jobTemplates,
+                this.jobScheduler,
+                this.jobResultsIndex,
+                this.evalEngines,
+                ...(this.agentEndpoints ? [this.agentEndpoints] : []),
+            ];
+            for (const doc of docs) doc.enableWriteBehind(writeBehind);
+            this.jobResults.enableWriteBehind(writeBehind.store, writeBehind.worker);
+        }
     }
 
     /**
@@ -117,10 +147,18 @@ export class DataLayer {
         );
     }
 
-    /** Build a {@link DataLayer} from `process.env` (writer; needs `DATA_SECRET_KEY`). */
+    /**
+     * Build a {@link DataLayer} from `process.env` (writer; needs `DATA_SECRET_KEY`). Writes are
+     * write-behind by default — durable in the off-chain store immediately, flushed on-chain by a
+     * background worker. Set `WRITE_BEHIND=0` to fall back to fully synchronous on-chain writes.
+     */
     static fromEnv(): DataLayer {
         const config = loadConfig();
-        return new DataLayer(config, createClients(config));
+        const clients = createClients(config);
+        if (process.env.WRITE_BEHIND === '0') return new DataLayer(config, clients);
+        const store = new OffchainStore(config.offchainDbPath);
+        const worker = new FlushWorker(store, { sweepMs: config.writeBehindSweepMs });
+        return new DataLayer(config, clients, { store, worker, lock: new KeyedLock() });
     }
 
     /**
