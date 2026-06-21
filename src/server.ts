@@ -162,6 +162,23 @@ function startServer(): void {
         return { jobs: filtered.slice(p * ps, p * ps + ps), total: filtered.length };
     });
 
+    // Jobs a user PAID FOR (buyer view). Index-only (the live path has no jobs mirror).
+    app.get('/users/:user/jobs', async (req) => {
+        const { user } = req.params as { user: string };
+        const { status, page, pageSize } = req.query as {
+            status?: string;
+            page?: string;
+            pageSize?: string;
+        };
+        const idx = useIndex();
+        if (!idx) return { jobs: [], total: 0 };
+        return idx.listUserJobs(user, {
+            ...(status ? { status } : {}),
+            page: page ? Number(page) : 0,
+            pageSize: pageSize ? Number(pageSize) : 50,
+        });
+    });
+
     // --- network activity (dashboard) --------------------------------------
     // Recent deliveries across all agents + a daily activity series. Index-backed;
     // the live path has no jobs mirror, so it returns empty (run the indexer for these).

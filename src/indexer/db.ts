@@ -56,6 +56,9 @@ export type JobRow = {
     status: 'released' | 'refunded' | 'pending';
 };
 
+/** A job from the PAYER's side (which agent did it), for the "jobs you paid for" view. */
+export type UserJobRow = JobRow & { agent: string; agentName: string };
+
 export type AgentsQuery = {
     search?: string;
     category?: string;
@@ -119,6 +122,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     paid_at_ms INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_agent ON jobs(agent);
+CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -409,6 +413,38 @@ export class IndexDb {
             .prepare(`SELECT * FROM jobs ${where} ORDER BY paid_at_ms DESC LIMIT @limit OFFSET @offset`)
             .all(params) as DbJob[];
         return { jobs: rows.map(toJobRow), total };
+    }
+
+    /** Jobs a USER (payer) paid for, newest first — joins the agent name. */
+    listUserJobs(
+        user: string,
+        opts: { status?: string; page?: number; pageSize?: number } = {},
+    ): { jobs: UserJobRow[]; total: number } {
+        const page = Math.max(0, opts.page ?? 0);
+        const pageSize = Math.min(200, Math.max(1, opts.pageSize ?? 50));
+        const status = opts.status ?? '';
+        const where = `WHERE lower(j.user) = lower(@user) AND (@status = '' OR j.status = @status)`;
+        const params = { user, status, limit: pageSize, offset: page * pageSize };
+
+        const total = (
+            this.#db.prepare(`SELECT COUNT(*) AS n FROM jobs j ${where}`).get(params) as { n: number }
+        ).n;
+        const rows = this.#db
+            .prepare(
+                `SELECT j.job_id AS jobId, j.escrow_id AS escrowId, j.cost AS cost, j.earned AS earned,
+                        j.paid_at_ms AS paidAtMs, j.status AS status, j.agent AS agent,
+                        COALESCE(a.name, '') AS agentName
+                 FROM jobs j LEFT JOIN agents a ON lower(a.wallet) = lower(j.agent)
+                 ${where} ORDER BY j.paid_at_ms DESC LIMIT @limit OFFSET @offset`,
+            )
+            .all(params) as (Omit<UserJobRow, 'status'> & { status: string })[];
+        return {
+            jobs: rows.map((r) => ({
+                ...r,
+                status: r.status === 'released' || r.status === 'refunded' ? r.status : 'pending',
+            })),
+            total,
+        };
     }
 
     /** Most recent released (delivered + paid) jobs across all agents, newest first. */
