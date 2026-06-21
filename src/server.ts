@@ -237,12 +237,21 @@ function startServer(): void {
     // --- job results (sealed envelope from the agent; gateway never decrypts) ---
     app.get('/job-results/:jobId', async (req) => {
         const { jobId } = req.params as { jobId: string };
-        return dl.jobResults.fetchSealed(jobId); // ciphertext envelope only
+        const sealed = await dl.jobResults.fetchSealed(jobId); // ciphertext envelope only
+        // The validator fetches here before decrypting. Logging hit/miss pinpoints "agent never
+        // registered the result" vs "stored but decrypt failed" when a paid job refunds.
+        app.log.info(`[results] fetch ${jobId}: ${sealed ? 'found' : 'NOT FOUND'}`);
+        return sealed;
     });
     app.post(
         '/job-results',
         { preHandler: requireAgent(dl, auth, { requireRegistered: true, allowAdmin: false }) },
-        async (req) => dl.jobResults.storeSealed(req.body as SealedResultBlob),
+        async (req) => {
+            const body = req.body as SealedResultBlob;
+            const out = await dl.jobResults.storeSealed(body);
+            app.log.info(`[results] stored job ${body.job_id} -> blob ${out.blobId}`);
+            return out;
+        },
     );
 
     // Flush any pending writes and release resources, then exit. Registered for SIGINT/SIGTERM so
