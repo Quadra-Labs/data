@@ -83,6 +83,30 @@ const READ_MASK = {
 // the live edge.
 const MAX_BACKFILL = 500;
 
+// Per-checkpoint backfill fetch retry (absorbs transient fullnode blips so a single
+// 5xx doesn't abort the whole stream and force a full reconnect/re-backfill).
+const BACKFILL_ATTEMPTS = 4;
+const BACKFILL_BASE_MS = 500;
+const BACKFILL_MAX_MS = 4000;
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Add up to 25% jitter so reconnecting clients don't thunder the fullnode in lockstep. */
+function jittered(ms: number): number {
+    return ms + Math.random() * ms * 0.25;
+}
+
+/**
+ * Long-lived gRPC streams against a public fullnode are routinely cut (HTTP/2 RST_STREAM,
+ * idle GOAWAY, load-balancer recycling). These are expected and fully recovered by the
+ * cursor-backfill reconnect, so they log at warn rather than error to avoid alarm fatigue.
+ */
+function isExpectedDisconnect(message: string): boolean {
+    return /RST_STREAM|Connection dropped|UNAVAILABLE|stream removed|GOAWAY|ECONNRESET|socket hang up|deadline|cancelled|EOF|Internal server error|read ECONN/i.test(
+        message,
+    );
+}
+
 type CheckpointData = { transactions?: { events?: { events?: unknown[] } }[] };
 
 export interface PointerWatcherOptions {
@@ -90,8 +114,11 @@ export interface PointerWatcherOptions {
     url?: string;
     walrusJsonPackageId: string;
     pointers: PointerIds;
-    /** Reconnect backoff in ms after a stream error/end (default 2000). */
+    /** Base reconnect backoff in ms after a stream error/end (default 2000). Escalates
+     * exponentially on consecutive failures and resets once the stream is healthy again. */
     reconnectMs?: number;
+    /** Ceiling for the escalating reconnect backoff (default 30000). */
+    maxReconnectMs?: number;
     /**
      * Resume from this checkpoint: the first stream response backfills everything
      * after it. Defaults to the current checkpoint height (only future changes).
@@ -113,6 +140,7 @@ export class PointerWatcher {
     #eventType: string;
     #pointerToDb: Map<string, DbName>;
     #reconnectMs: number;
+    #maxReconnectMs: number;
     #running = false;
     #abort: AbortController | undefined;
     #handlers = new Set<ChangeHandler>();
@@ -133,6 +161,7 @@ export class PointerWatcher {
         });
         this.#eventType = `${options.walrusJsonPackageId}::pointer::PointerUpdated`;
         this.#reconnectMs = options.reconnectMs ?? 2000;
+        this.#maxReconnectMs = options.maxReconnectMs ?? 30_000;
         this.#pointerToDb = new Map(
             (Object.entries(options.pointers) as [DbName, string][]).map(([db, id]) => [id, db]),
         );
@@ -173,15 +202,21 @@ export class PointerWatcher {
                 // Fall back to starting at the live edge.
             }
         }
+        // Consecutive failures since the stream was last healthy; drives exponential backoff.
+        let failures = 0;
         while (this.#running) {
             const abort = new AbortController();
             this.#abort = abort;
+            let healthy = false;
             try {
                 const call = this.#client.subscriptionService.subscribeCheckpoints(
                     { readMask: READ_MASK },
                     { abort: abort.signal },
                 );
                 for await (const res of call.responses) {
+                    // A flowing stream is healthy: clear the backoff so a later blip reconnects fast.
+                    healthy = true;
+                    failures = 0;
                     if (res.cursor === undefined) continue;
                     if (this.#lastCursor !== undefined && res.cursor > this.#lastCursor + 1n) {
                         await this.#backfill(this.#lastCursor + 1n, res.cursor - 1n, abort);
@@ -191,12 +226,29 @@ export class PointerWatcher {
                 }
             } catch (error) {
                 if (!this.#running) return; // aborted by stop()
-                console.error(
-                    '[watch] checkpoint stream error:',
-                    error instanceof Error ? error.message : error,
+                failures = healthy ? 1 : failures + 1;
+                const delay = jittered(
+                    Math.min(this.#maxReconnectMs, this.#reconnectMs * 2 ** (failures - 1)),
+                );
+                const msg = error instanceof Error ? error.message : String(error);
+                const where = `reconnecting in ${Math.round(delay)}ms`;
+                // Expected stream resets are routine for long-lived streams and fully recovered by
+                // the cursor backfill — log at warn. Anything else is a genuine error.
+                if (isExpectedDisconnect(msg)) {
+                    console.warn(`[watch] stream reset (${where}): ${msg}`);
+                } else {
+                    console.error(`[watch] checkpoint stream error (${where}):`, msg);
+                }
+                await sleep(delay);
+                continue;
+            }
+            // Stream ended without throwing (server closed it cleanly) — reconnect with backoff.
+            if (this.#running) {
+                failures = healthy ? 1 : failures + 1;
+                await sleep(
+                    jittered(Math.min(this.#maxReconnectMs, this.#reconnectMs * 2 ** (failures - 1))),
                 );
             }
-            if (this.#running) await new Promise((r) => setTimeout(r, this.#reconnectMs));
         }
     }
 
@@ -209,14 +261,34 @@ export class PointerWatcher {
             return;
         }
         for (let seq = from; seq <= to && this.#running; seq++) {
-            const { response } = await this.#client.ledgerService.getCheckpoint(
-                {
-                    checkpointId: { oneofKind: 'sequenceNumber', sequenceNumber: seq },
-                    readMask: READ_MASK,
-                },
-                { abort: abort.signal },
-            );
+            const response = await this.#getCheckpoint(seq, abort);
             this.#scan(response.checkpoint as CheckpointData | undefined, Number(seq));
+        }
+    }
+
+    /** Fetch one checkpoint, retrying transient fullnode failures with backoff so a single blip
+     * mid-backfill doesn't unwind the whole stream. Throws (to trigger a reconnect) only after
+     * exhausting attempts or on abort. */
+    async #getCheckpoint(
+        seq: bigint,
+        abort: AbortController,
+    ): Promise<{ checkpoint?: unknown }> {
+        let delay = BACKFILL_BASE_MS;
+        for (let attempt = 1; ; attempt++) {
+            try {
+                const { response } = await this.#client.ledgerService.getCheckpoint(
+                    {
+                        checkpointId: { oneofKind: 'sequenceNumber', sequenceNumber: seq },
+                        readMask: READ_MASK,
+                    },
+                    { abort: abort.signal },
+                );
+                return response;
+            } catch (error) {
+                if (!this.#running || abort.signal.aborted || attempt >= BACKFILL_ATTEMPTS) throw error;
+                await sleep(jittered(delay));
+                delay = Math.min(delay * 2, BACKFILL_MAX_MS);
+            }
         }
     }
 
