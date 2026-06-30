@@ -19,6 +19,12 @@ export interface PointerIds {
 export interface DataLayerConfig {
     network: WalrusNetwork;
     epochs: number;
+    /**
+     * Epochs to store sealed job RESULT blobs for. Kept much longer than `epochs` (pointer docs)
+     * so a buyer can still reveal a result long after delivery — at 5 epochs results vanished in
+     * ~5 days and `/job-results` then 410s. Walrus is pay-per-epoch (no permanent tier; ~53 max).
+     */
+    resultEpochs: number;
     walrusJsonPackageId: string;
     quadraPackageId: string;
     jobAccessRegistryId: string;
@@ -81,6 +87,7 @@ export function loadConfig(): DataLayerConfig {
     return {
         network,
         epochs: optionalNumber('DATA_EPOCHS', 5),
+        resultEpochs: optionalNumber('RESULT_EPOCHS', 30),
         walrusJsonPackageId: required('WALRUS_JSON_PACKAGE_ID'),
         quadraPackageId: required('QUADRA_PACKAGE_ID'),
         jobAccessRegistryId: required('JOB_ACCESS_REGISTRY_ID'),

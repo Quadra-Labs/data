@@ -83,7 +83,9 @@ export class DataLayer {
             quadraPackageId: config.quadraPackageId,
             jobAccessRegistryId: config.jobAccessRegistryId,
             threshold: config.sealThreshold,
-            epochs,
+            // Result blobs persist far longer than pointer docs (RESULT_EPOCHS, default 30) so
+            // buyers can still reveal a result weeks after delivery — not the 5-epoch pointer TTL.
+            epochs: config.resultEpochs,
         });
 
         // Serve every pointer-backed READ from an in-memory stale-while-revalidate cache so a slow

@@ -252,13 +252,31 @@ function startServer(): void {
     });
 
     // --- job results (sealed envelope from the agent; gateway never decrypts) ---
-    app.get('/job-results/:jobId', async (req) => {
+    app.get('/job-results/:jobId', async (req, reply) => {
         const { jobId } = req.params as { jobId: string };
-        const sealed = await dl.jobResults.fetchSealed(jobId); // ciphertext envelope only
-        // The validator fetches here before decrypting. Logging hit/miss pinpoints "agent never
-        // registered the result" vs "stored but decrypt failed" when a paid job refunds.
-        app.log.info(`[results] fetch ${jobId}: ${sealed ? 'found' : 'NOT FOUND'}`);
-        return sealed;
+        // The validator fetches here before decrypting. These are EXPECTED "result not available"
+        // states, not server errors — return a clear status + message instead of a raw 500 (which
+        // the web "Reveal result" flow surfaced as a scary "Gateway 500"):
+        //  - the agent never stored a result (job failed/refunded before sealing) -> 404
+        //  - the sealed blob's Walrus storage expired (results kept WALRUS_EPOCHS epochs) -> 410
+        try {
+            const sealed = await dl.jobResults.fetchSealed(jobId); // ciphertext envelope only
+            app.log.info(`[results] fetch ${jobId}: found`);
+            return sealed;
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (msg.includes('No result indexed')) {
+                app.log.info(`[results] fetch ${jobId}: NOT FOUND (no result stored)`);
+                return reply.code(404).send({ error: 'no_result', message: 'No result was produced for this job.' });
+            }
+            if ((err instanceof Error && err.name === 'BlobNotCertifiedError') || msg.includes('is not certified')) {
+                app.log.info(`[results] fetch ${jobId}: EXPIRED (result blob no longer certified)`);
+                return reply
+                    .code(410)
+                    .send({ error: 'result_expired', message: 'This result is no longer available — its encrypted storage on Walrus has expired.' });
+            }
+            throw err; // genuinely unexpected -> 500
+        }
     });
     app.post(
         '/job-results',
