@@ -28,8 +28,9 @@ import {
 import { privateKeyToAccount } from 'viem/accounts';
 import { zeroAddress, type Address, type Hex } from 'viem';
 
+import { loadDeployment } from 'quadra-core/deployments';
+
 import { makeVerifyFetcher, blockOfTx, type VerifyChainConfig } from './fetch.js';
-import { loadDeployment } from './addresses.js';
 
 export interface VerifyOptions extends VerifyChainConfig {
     /** Flare DA layer base URL. Omitted, the oracle re-fetch check reports as skipped. */

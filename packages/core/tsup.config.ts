@@ -9,6 +9,7 @@ export default defineConfig({
         index: 'src/index.ts',
         groundTruth: 'src/groundTruth.ts',
         verify: 'src/verify/index.ts',
+        deployments: 'src/deployments.ts',
     },
     format: ['esm'],
     dts: true,

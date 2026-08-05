@@ -11,4 +11,14 @@
  * word for anything — that is `quadra-verify`'s job, and it reads calldata, not this index.
  */
 
-export {};
+export {
+    loadConfig,
+    explainMissing,
+    txUrl,
+    addressUrl,
+    type DataConfig,
+    type ConfigResult,
+    type ConfigSource,
+} from './config.js';
+export { loadDotEnv } from './config/dotenv.js';
+export { Cached, KeyedCache, warmAll, type CachedOptions, type WarmResult } from './cache.js';

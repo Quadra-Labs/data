@@ -19,5 +19,4 @@ export {
     type FetchedSettlement,
     type RegisteredTee,
 } from './fetch.js';
-export { loadDeployment, type Deployment } from './addresses.js';
 export { jobEscrowVerifyAbi, sealedCompetitionVerifyAbi, teeRegistryVerifyAbi } from './abis.js';

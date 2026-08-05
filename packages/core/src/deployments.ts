@@ -1,14 +1,17 @@
 /**
- * addresses.ts — where the contract addresses come from.
+ * deployments.ts — where the contract addresses come from.
  *
  * `contracts/deployments/<chainId>.json` is the source of truth, written by the deploy script.
  * Reading it means a redeploy needs no config change anywhere, which is the whole reason the
  * markets can be redeployed cheaply before submission. Environment variables override it, for the
- * case where someone is verifying against a deployment they did not run.
+ * case where someone is pointing a tool at a deployment they did not run.
  *
  * The file is looked up relative to this package, assuming the sibling-checkout layout the Quadra
  * repos already use (`data/` and `contracts/` next to each other). If it is not there, env alone
  * is enough — the file is a convenience, never a requirement.
+ *
+ * This touches the filesystem, so it ships behind the `quadra-core/deployments` subpath rather
+ * than the pure entry point, for the same reason `ground-truth` does.
  */
 
 import { readFileSync } from 'node:fs';
@@ -33,7 +36,7 @@ function candidates(): string[] {
     const fromEnv = process.env['CONTRACTS_DIR'];
     return [
         ...(fromEnv ? [join(fromEnv, 'deployments')] : []),
-        // packages/verify/{src,dist} -> data/packages/verify -> data/packages -> data -> <parent>
+        // packages/core/{src,dist} -> packages/core -> packages -> data -> <parent>/contracts
         resolve(here, '..', '..', '..', '..', 'contracts', 'deployments'),
         resolve(process.cwd(), '..', 'contracts', 'deployments'),
         resolve(process.cwd(), 'contracts', 'deployments'),
