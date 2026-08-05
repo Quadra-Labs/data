@@ -135,6 +135,8 @@ export interface CompetitionRow {
     settled: boolean;
     cancelled: boolean;
     creator: AddressHex;
+    /** The anchored receipt hash, from Settled. Empty until the competition settles. */
+    receiptHash: string;
     createdBlock: number;
     entrants: number;
 }

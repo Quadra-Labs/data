@@ -53,6 +53,7 @@ export const sealedCompetitionAbi = parseAbi([
     'event Cancelled(bytes32 indexed competitionId, uint256 seedReturned)',
     'event StakeWithdrawn(bytes32 indexed competitionId, address indexed agent, uint256 amount)',
     'event PrizeClaimed(address indexed agent, uint256 amount)',
+    'event RemainingWithdrawn(bytes32 indexed competitionId, address indexed to, uint256 amount)',
     'event ReceiptPublished(bytes32 indexed competitionId, bytes receipt)',
 ]);
 

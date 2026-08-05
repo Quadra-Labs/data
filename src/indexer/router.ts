@@ -280,20 +280,52 @@ function routeOne(
         }
 
         case 'Settled': {
-            db.applySettled({ competitionId: String(a['competitionId']) });
+            db.applySettled({
+                competitionId: String(a['competitionId']),
+                receiptHash: String(a['receiptHash'] ?? ''),
+                // The payout LEAVES the pool: the contract sets `prizePool = prize - totalPaid`,
+                // and what is left is dust the creator may reclaim.
+                totalPaid: (a['totalPaid'] as bigint) ?? 0n,
+            });
             return 'applied';
         }
 
         case 'Cancelled': {
-            db.applyCancelled({ competitionId: String(a['competitionId']) });
+            db.applyCancelled({
+                competitionId: String(a['competitionId']),
+                seedReturned: (a['seedReturned'] as bigint) ?? 0n,
+            });
+            return 'applied';
+        }
+
+        // The remaining three ways the pool shrinks. Missing any of them leaves a finished
+        // competition advertising money the contract no longer holds.
+        case 'StakeWithdrawn': {
+            db.applyStakeWithdrawn({
+                competitionId: String(a['competitionId']),
+                amount: (a['amount'] as bigint) ?? 0n,
+            });
+            return 'applied';
+        }
+
+        case 'RemainingWithdrawn': {
+            db.applyRemainingWithdrawn({
+                competitionId: String(a['competitionId']),
+                amount: (a['amount'] as bigint) ?? 0n,
+            });
             return 'applied';
         }
 
         // Decoded, but nothing in the read model depends on it. Listed rather than defaulted, so
         // adding a case is a deliberate act and an unlisted event still shows up in the count.
+        //
+        // `PrizeClaimed` is paid out of the winner's `owed` balance, which the pool already gave
+        // up at settlement — counting it again would subtract the same money twice.
+        // `RecorderSet` is a known gap: a newly authorized market would write scores this indexer
+        // is not watching. It is owner-only and would accompany a deployment, so the operator
+        // restarts with the new address anyway; see the note in DEPLOYMENT-STATE.md.
         case 'ReceiptPublished':
         case 'RecorderSet':
-        case 'StakeWithdrawn':
         case 'PrizeClaimed':
         case 'TeeRegistered':
         case 'FccTeeRegistered':

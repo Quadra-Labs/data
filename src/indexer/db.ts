@@ -139,6 +139,7 @@ interface DbCompetition {
     settled: number;
     cancelled: number;
     creator: string;
+    receipt_hash: string;
     created_block: number;
     entrants: number;
 }
@@ -158,6 +159,8 @@ function toCompetitionRow(r: DbCompetition): CompetitionRow {
         settled: r.settled === 1,
         cancelled: r.cancelled === 1,
         creator: r.creator,
+
+        receiptHash: r.receipt_hash,
         createdBlock: r.created_block,
         entrants: r.entrants,
     };
@@ -484,26 +487,48 @@ export class IndexDb {
     }
 
     applyJoined(c: { competitionId: string; agent: string; stake: bigint }): void {
-        // Read, add, write back — deliberately NOT `CAST(prize_pool AS INTEGER) + @stake` in SQL.
-        // That cast is the very overflow the TEXT columns exist to avoid: a prize pool past
-        // ~9.2 QUADRA would silently saturate or lose precision inside SQLite.
         const tx = this.#db.transaction(() => {
-            const row = this.#db
-                .prepare(`SELECT prize_pool FROM competitions WHERE competition_id = @competitionId`)
-                .get({ competitionId: c.competitionId }) as { prize_pool: string } | undefined;
-            if (row) {
-                this.#db
-                    .prepare(
-                        `UPDATE competitions SET prize_pool = @pool WHERE competition_id = @competitionId`,
-                    )
-                    .run({
-                        competitionId: c.competitionId,
-                        pool: (big(row.prize_pool) + c.stake).toString(),
-                    });
-            }
+            this.#adjustPool(c.competitionId, c.stake);
             this.upsertAgentIdentity({ wallet: c.agent });
         });
         tx();
+    }
+
+    /**
+     * Move a competition's prize pool by `delta`.
+     *
+     * Read, add, write back — deliberately NOT `CAST(prize_pool AS INTEGER) + @delta` in SQL. That
+     * cast is the very overflow the TEXT money columns exist to prevent: a pool past ~9.2 QUADRA
+     * would silently saturate inside SQLite.
+     *
+     * The pool moves in SIX places on chain — seeded at create, raised by each join, lowered by a
+     * cancel refund, by a stake withdrawal, by the winners' payout at settlement, and by the
+     * creator withdrawing the remainder. Tracking only the first two, which is what this indexer
+     * did at first, leaves a settled competition still showing its full pool while the contract
+     * holds nothing but dust.
+     */
+    #adjustPool(competitionId: string, delta: bigint): void {
+        const row = this.#db
+            .prepare(`SELECT prize_pool FROM competitions WHERE competition_id = @competitionId`)
+            .get({ competitionId }) as { prize_pool: string } | undefined;
+        if (!row) return;
+        const next = big(row.prize_pool) + delta;
+        this.#db
+            .prepare(`UPDATE competitions SET prize_pool = @pool WHERE competition_id = @competitionId`)
+            .run({
+                competitionId,
+                // The contract can never go negative, but an index that started mid-history can:
+                // a withdrawal whose deposit predates FROM_BLOCK has nothing to subtract from.
+                pool: (next < 0n ? 0n : next).toString(),
+            });
+    }
+
+    applyStakeWithdrawn(c: { competitionId: string; amount: bigint }): void {
+        this.#adjustPool(c.competitionId, -c.amount);
+    }
+
+    applyRemainingWithdrawn(c: { competitionId: string; amount: bigint }): void {
+        this.#adjustPool(c.competitionId, -c.amount);
     }
 
     applySubmitted(s: SubmissionRow): void {
@@ -531,17 +556,33 @@ export class IndexDb {
         this.#recomputeAwarded(p.competitionId);
     }
 
-    applySettled(c: { competitionId: string }): void {
-        this.#db
-            .prepare(`UPDATE competitions SET settled = 1 WHERE competition_id = @competitionId`)
-            .run(c);
-        this.#recomputeAwarded(c.competitionId);
+    /**
+     * `totalPaid` leaves the pool at settlement — the contract sets `prizePool = prize - totalPaid`
+     * and the remainder is dust the creator may reclaim. That dust is emphatically NOT the prize
+     * to show for a finished competition, which is why `awarded` is tracked separately.
+     */
+    applySettled(c: { competitionId: string; receiptHash: string; totalPaid: bigint }): void {
+        const tx = this.#db.transaction(() => {
+            this.#db
+                .prepare(
+                    `UPDATE competitions SET settled = 1, receipt_hash = @receiptHash
+                      WHERE competition_id = @competitionId`,
+                )
+                .run({ competitionId: c.competitionId, receiptHash: c.receiptHash });
+            this.#adjustPool(c.competitionId, -c.totalPaid);
+            this.#recomputeAwarded(c.competitionId);
+        });
+        tx();
     }
 
-    applyCancelled(c: { competitionId: string }): void {
-        this.#db
-            .prepare(`UPDATE competitions SET cancelled = 1 WHERE competition_id = @competitionId`)
-            .run(c);
+    applyCancelled(c: { competitionId: string; seedReturned: bigint }): void {
+        const tx = this.#db.transaction(() => {
+            this.#db
+                .prepare(`UPDATE competitions SET cancelled = 1 WHERE competition_id = @competitionId`)
+                .run({ competitionId: c.competitionId });
+            this.#adjustPool(c.competitionId, -c.seedReturned);
+        });
+        tx();
     }
 
     /** Recompute the total paid out from the prize rows, so a replay cannot double it. */

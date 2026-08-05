@@ -23,7 +23,7 @@
  * checks it and refuses rather than failing at the first SELECT, which is what the Sui version did
  * when it met a database created before its newest column.
  */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const SCHEMA = `
 -- Agent identity. Flare has no on-chain agent registry, so name/description/owner come from a
@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS competitions (
     settled INTEGER NOT NULL DEFAULT 0,
     cancelled INTEGER NOT NULL DEFAULT 0,
     creator TEXT NOT NULL DEFAULT '',
+    receipt_hash TEXT NOT NULL DEFAULT '',
     created_block INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_competitions_resolve ON competitions(resolve_at);
