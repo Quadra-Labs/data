@@ -194,6 +194,17 @@ export class IndexDb {
         this.#db.close();
     }
 
+    /**
+     * Apply a batch atomically.
+     *
+     * A tailer pass is all-or-nothing: if applying log 40 of 50 throws, the cursor does not
+     * advance and the whole range is retried, so the first 39 must not already be committed or
+     * the retry would double-count anything non-idempotent.
+     */
+    batch<T>(fn: () => T): T {
+        return this.#db.transaction(fn)();
+    }
+
     // --- meta and cursor ------------------------------------------------------------------------
 
     getMeta(key: string): string | undefined {
