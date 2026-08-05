@@ -16,6 +16,7 @@
  */
 
 export * from './scorers/index.js';
+export * from './feeds.js';
 export * from './eip712.js';
 export * from './receipt.js';
 export * from './envelope.js';

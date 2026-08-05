@@ -7,6 +7,7 @@ import { defineConfig } from 'tsup';
 export default defineConfig({
     entry: {
         index: 'src/index.ts',
+        groundTruth: 'src/groundTruth.ts',
     },
     format: ['esm'],
     dts: true,

@@ -11,6 +11,10 @@
         ".": {
             "types": "./dist/index.d.ts",
             "import": "./dist/index.js"
+        },
+        "./ground-truth": {
+            "types": "./dist/groundTruth.d.ts",
+            "import": "./dist/groundTruth.js"
         }
     },
     "files": [
