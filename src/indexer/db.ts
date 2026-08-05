@@ -179,6 +179,29 @@ const AGENT_SELECT = `
       ON t.agent = a.wallet
      AND t.category = CASE WHEN @category = '' THEN a.category ELSE @category END`;
 
+/**
+ * Rank, computed the way `Passport.rank` computes it.
+ *
+ * Two properties, and getting either wrong makes the number a lie:
+ *
+ *   - **The base is the CATEGORY, never the current query.** Ranking over the filtered rows would
+ *     make the best match for a search read "rank 1" while the chain says it is fiftieth. Filters
+ *     and pagination must not move anyone's rank.
+ *   - **Only agents WITH a track are ranked.** `Passport.rank` returns 0 for an agent it has never
+ *     recorded, and its loop walks only recorded agents, so an unscored agent neither has a rank
+ *     nor pushes anyone else down.
+ */
+const RANKED_AGENTS = `
+    WITH base AS (${AGENT_SELECT}),
+         tracked AS (
+             SELECT wallet, RANK() OVER (ORDER BY overall_x100 DESC) AS rnk
+               FROM base WHERE scored IS NOT NULL
+         ),
+         ranked AS (
+             SELECT b.*, COALESCE(t.rnk, 0) AS rank
+               FROM base b LEFT JOIN tracked t ON t.wallet = b.wallet
+         )`;
+
 export class IndexDb {
     readonly #db: Database.Database;
 
@@ -416,8 +439,21 @@ export class IndexDb {
         });
     }
 
+    /**
+     * A refund closes the job on BOTH clocks.
+     *
+     * `refundNotDelivered` sets `released = true` AND `scored = true`, and records a 0 in the
+     * Passport — its own comment calls that "this job's final word on reputation". An index that
+     * left `scored` false would disagree with the contract and would keep offering the job to a
+     * keeper as still-scorable.
+     */
     applyRefunded(j: { jobId: string; agent: string; user: string }): void {
-        this.#upsertJob(j.jobId, lower(j.agent), { released: 1, status: 'refunded' });
+        this.#upsertJob(j.jobId, lower(j.agent), {
+            released: 1,
+            scored: 1,
+            score: 0,
+            status: 'refunded',
+        });
         this.#db
             .prepare(`UPDATE jobs SET user = @user WHERE job_id = @jobId AND user = ''`)
             .run({ jobId: j.jobId, user: lower(j.user) });
@@ -691,8 +727,7 @@ export class IndexDb {
     getAgentDetail(wallet: string, category = ''): AgentDetail | undefined {
         const row = this.#db
             .prepare(
-                `WITH scored AS (${AGENT_SELECT}),
-                      ranked AS (SELECT *, RANK() OVER (ORDER BY overall_x100 DESC) AS rank FROM scored)
+                `${RANKED_AGENTS}
                  SELECT r.*, (SELECT COUNT(*) FROM ranked) AS total_agents
                    FROM ranked r WHERE r.wallet = @wallet`,
             )
@@ -745,16 +780,16 @@ export class IndexDb {
 
         const total = (
             this.#db
-                .prepare(`WITH scored AS (${AGENT_SELECT}) SELECT COUNT(*) AS n FROM scored ${where}`)
+                .prepare(`${RANKED_AGENTS} SELECT COUNT(*) AS n FROM ranked ${where}`)
                 .get(params) as { n: number }
         ).n;
 
+        // Rank comes from RANKED_AGENTS, which scopes it to the category. Filtering and paging
+        // happen after, so neither can move anyone's rank.
         const rows = this.#db
             .prepare(
-                `WITH scored AS (${AGENT_SELECT}),
-                      filtered AS (SELECT * FROM scored ${where}),
-                      ranked AS (SELECT *, RANK() OVER (ORDER BY overall_x100 DESC) AS rank FROM filtered)
-                 SELECT * FROM ranked ORDER BY ${sortCol} ${dir} LIMIT @limit OFFSET @offset`,
+                `${RANKED_AGENTS}
+                 SELECT * FROM ranked ${where} ORDER BY ${sortCol} ${dir} LIMIT @limit OFFSET @offset`,
             )
             .all(params) as (DbAgent & { rank: number })[];
 
@@ -879,7 +914,12 @@ export class IndexDb {
         const start = today - (n - 1) * DAY;
 
         const jobRows = this.#db
-            .prepare(`SELECT paid_at_ms FROM jobs WHERE released = 1 AND paid_at_ms >= @start`)
+            // `released` alone would count REFUNDS as settled work: a refund also sets released,
+            // so a job nobody delivered — where the buyer got their money back — would appear in
+            // the activity chart as a completed job. Delivered AND released is the real thing.
+            .prepare(
+                `SELECT paid_at_ms FROM jobs WHERE released = 1 AND delivered = 1 AND paid_at_ms >= @start`,
+            )
             .all({ start }) as { paid_at_ms: number }[];
         const agentRows = this.#db.prepare(`SELECT created_at FROM agents`).all() as {
             created_at: number;
