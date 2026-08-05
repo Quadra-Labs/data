@@ -22,3 +22,4 @@ export {
 } from './config.js';
 export { loadDotEnv } from './config/dotenv.js';
 export { Cached, KeyedCache, warmAll, type CachedOptions, type WarmResult } from './cache.js';
+export * from './chain/index.js';
