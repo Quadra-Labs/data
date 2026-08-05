@@ -21,6 +21,9 @@ export const jobEscrowAbi = parseAbi([
     'function scoredReceiptHash(bytes32) view returns (bytes32)',
     'function feeBps() view returns (uint16)',
     'function token() view returns (address)',
+    // Not called — decoded. The delivered ciphertext lives in this call's calldata, which is the
+    // only place it exists: the contract stores keccak(ciphertext), never the bytes.
+    'function deliver(bytes32 jobId, bytes ciphertext)',
     // events
     'event JobPaid(bytes32 indexed jobId, address indexed user, address indexed agent, string evaluatorId, uint256 cost, uint64 deliveryDeadline, uint64 lifetimeEnd, bytes userPubKey, bytes params)',
     'event Delivered(bytes32 indexed jobId, address indexed agent, bytes32 ciphertextHash)',

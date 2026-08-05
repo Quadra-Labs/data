@@ -834,7 +834,7 @@ export class IndexDb {
 
     listAgentJobs(
         agent: string,
-        opts: { status?: string; page?: number; pageSize?: number } = {},
+        opts: { status?: string | undefined; page?: number | undefined; pageSize?: number | undefined } = {},
     ): { jobs: JobRow[]; total: number } {
         const page = Math.max(0, opts.page ?? 0);
         const pageSize = Math.min(200, Math.max(1, opts.pageSize ?? 50));
@@ -856,7 +856,7 @@ export class IndexDb {
 
     listUserJobs(
         user: string,
-        opts: { status?: string; page?: number; pageSize?: number } = {},
+        opts: { status?: string | undefined; page?: number | undefined; pageSize?: number | undefined } = {},
     ): { jobs: UserJobRow[]; total: number } {
         const page = Math.max(0, opts.page ?? 0);
         const pageSize = Math.min(200, Math.max(1, opts.pageSize ?? 50));

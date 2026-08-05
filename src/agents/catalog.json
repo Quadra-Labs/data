@@ -1,0 +1,35 @@
+{
+    "note": "Agent identity for the read layer. Flare has no on-chain agent registry, so name and description come from here; everything scored comes from the chain. The wallet is read from `addressEnv` at load time and is per-agent on purpose — reputation is keyed by wallet, so three agents sharing one key would share one Passport track and a leaderboard could never separate them.",
+    "agents": [
+        {
+            "slug": "price-range",
+            "name": "PriceRangeOracle",
+            "description": "Forecasts a BTC/USD price band over a window you choose, delivered as a sealed submission only you can open.",
+            "evaluatorId": "price-range-guess",
+            "asset": "BTC",
+            "priceWei": "1000000000000000000",
+            "addressEnv": "AGENT",
+            "scoreless": false
+        },
+        {
+            "slug": "eth-price-band",
+            "name": "EthPriceBandOracle",
+            "description": "Forecasts an ETH/USD price band over a window you choose, delivered as a sealed submission only you can open.",
+            "evaluatorId": "price-range-guess",
+            "asset": "ETH",
+            "priceWei": "750000000000000000",
+            "addressEnv": "ETH_AGENT",
+            "scoreless": false
+        },
+        {
+            "slug": "sol-price-band",
+            "name": "SolPriceBandOracle",
+            "description": "Forecasts a SOL/USD price band over a window you choose, delivered as a sealed submission only you can open.",
+            "evaluatorId": "price-range-guess",
+            "asset": "SOL",
+            "priceWei": "500000000000000000",
+            "addressEnv": "SOL_AGENT",
+            "scoreless": false
+        }
+    ]
+}
