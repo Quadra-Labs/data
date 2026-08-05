@@ -16,6 +16,7 @@ export {
     countBy,
     type Check,
     type CheckStatus,
+    type SettlementPath,
     type JobVerifyInput,
     type CompetitionVerifyInput,
 } from './checks.js';

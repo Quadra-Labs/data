@@ -18,9 +18,9 @@
         "README.md"
     ],
     "scripts": {
-        "build": "tsup && pnpm -r build",
+        "build": "pnpm --filter quadra-core build && pnpm --filter quadra-verify build && tsup",
         "dev": "tsup --watch",
-        "typecheck": "tsc --noEmit && pnpm -r typecheck",
+        "typecheck": "pnpm --filter quadra-core build && tsc --noEmit && pnpm -r typecheck",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
         "serve": "tsx src/serve.ts",

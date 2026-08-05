@@ -1,0 +1,45 @@
+{
+    "name": "quadra-verify",
+    "version": "1.0.0",
+    "description": "Re-derive a Quadra settlement from chain data alone: the anchored receipt, the TEE signature, the FTSO ground truth and a replay of the scorer, each checked independently.",
+    "license": "Apache-2.0",
+    "type": "module",
+    "bin": {
+        "quadra-verify": "./bin/quadra-verify.js"
+    },
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js"
+        }
+    },
+    "files": [
+        "dist",
+        "bin"
+    ],
+    "scripts": {
+        "build": "tsup",
+        "typecheck": "tsc --noEmit",
+        "verify": "tsx src/verify.ts"
+    },
+    "keywords": [
+        "quadra",
+        "flare",
+        "verification",
+        "eip-712",
+        "coston2"
+    ],
+    "engines": {
+        "node": ">=20.12"
+    },
+    "dependencies": {
+        "quadra-core": "file:../core",
+        "viem": "^2.21.0"
+    },
+    "devDependencies": {
+        "tsx": "^4.19.0",
+        "tsup": "^8.5.0"
+    }
+}

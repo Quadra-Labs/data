@@ -32,6 +32,20 @@ import {
  */
 export type CheckStatus = 'pass' | 'fail' | 'skipped';
 
+/**
+ * Which entrypoint published the settlement.
+ *
+ * `eip712` is `settle` / `scoreJob`: the TEE signs typed data bound to this chain AND this
+ * contract, and the signature travels as a calldata argument this tool can recover.
+ *
+ * `fcc` is `settleFromTee` / `scoreJobFromTee`: Flare Confidential Compute signs a
+ * `TEE_ACTION_RESULT` digest instead — EIP-191 over an abi-encoded blob, with a layout defined by
+ * Flare rather than by us. The contract still verifies it and still requires the registered TEE,
+ * so the settlement is no less attested; this build simply does not reconstruct that digest yet.
+ * See _migration/KNOWN-CONSTRAINTS.md entry 1.
+ */
+export type SettlementPath = 'eip712' | 'fcc';
+
 export interface Check {
     readonly label: string;
     readonly status: CheckStatus;
@@ -43,6 +57,32 @@ export interface Check {
 function make(label: string, status: CheckStatus, detail?: string): Check {
     const base = { label, status, ok: status === 'pass' };
     return detail === undefined ? base : { ...base, detail };
+}
+
+const SIGNER_LABEL = 'EIP-712 signer is the registered TEE';
+
+/**
+ * The signer check, or an honest skip when the settlement did not travel the EIP-712 path.
+ *
+ * Reporting an FCC settlement as a signature FAILURE would be wrong twice over: the contract did
+ * verify a TEE signature before paying anyone, and the reader would conclude the settlement was
+ * forged when it was not.
+ */
+function signerCheck(path: SettlementPath, recovered: Address, registeredTee: Address): Check {
+    if (path === 'fcc') {
+        return make(
+            SIGNER_LABEL,
+            'skipped',
+            'settled through the Flare Confidential Compute path, which signs a TEE_ACTION_RESULT ' +
+                'digest rather than EIP-712 typed data; the contract verified it against the same ' +
+                'registered TEE, but this build does not reconstruct that digest',
+        );
+    }
+    return verdict(
+        SIGNER_LABEL,
+        recovered.toLowerCase() === registeredTee.toLowerCase(),
+        recovered,
+    );
 }
 
 const verdict = (label: string, ok: boolean, detail?: string): Check =>
@@ -193,7 +233,9 @@ async function recoverOrZero(recover: () => Promise<Address>): Promise<Address> 
 export interface CompetitionVerifyInput {
     readonly receiptBody: Hex;
     readonly anchoredReceiptHash: Hex;
+    /** Empty on the FCC path, where the signature is not EIP-712 typed data. */
     readonly signature: Hex;
+    readonly settlementPath?: SettlementPath | undefined;
     readonly signedGroundTruthValue: bigint;
     /** From the settle calldata. `score` is a bigint because the on-chain field is uint64. */
     readonly signedEntries: readonly { readonly agent: Address; readonly score: bigint }[];
@@ -219,27 +261,28 @@ export async function verifyCompetition(input: CompetitionVerifyInput): Promise<
         ...receiptChecks(input.receiptBody, input.anchoredReceiptHash, receipt),
     ];
 
-    const signer = await recoverOrZero(() =>
-        recoverTypedDataAddress({
-            domain: competitionDomain(input.chainId, input.verifyingContract),
-            types: competitionTypes,
-            primaryType: 'Settlement',
-            message: {
-                competitionId: receipt.competitionId,
-                receiptHash: input.anchoredReceiptHash,
-                groundTruthValue: input.signedGroundTruthValue,
-                entries: input.signedEntries.map((e) => ({ agent: e.agent, score: e.score })),
-            },
-            signature: input.signature,
-        }),
-    );
-    checks.push(
-        verdict(
-            'EIP-712 signer is the registered TEE',
-            signer.toLowerCase() === input.registeredTee.toLowerCase(),
-            signer,
-        ),
-    );
+    const path = input.settlementPath ?? 'eip712';
+    const signer =
+        path === 'fcc'
+            ? zeroAddress
+            : await recoverOrZero(() =>
+                  recoverTypedDataAddress({
+                      domain: competitionDomain(input.chainId, input.verifyingContract),
+                      types: competitionTypes,
+                      primaryType: 'Settlement',
+                      message: {
+                          competitionId: receipt.competitionId,
+                          receiptHash: input.anchoredReceiptHash,
+                          groundTruthValue: input.signedGroundTruthValue,
+                          entries: input.signedEntries.map((e) => ({
+                              agent: e.agent,
+                              score: e.score,
+                          })),
+                      },
+                      signature: input.signature,
+                  }),
+              );
+    checks.push(signerCheck(path, signer, input.registeredTee));
 
     checks.push(imageDigestCheck(receipt, input.registeredImageDigest));
     checks.push(
@@ -335,7 +378,9 @@ export async function verifyCompetition(input: CompetitionVerifyInput): Promise<
 export interface JobVerifyInput {
     readonly receiptBody: Hex;
     readonly anchoredReceiptHash: Hex;
+    /** Empty on the FCC path, where the signature is not EIP-712 typed data. */
     readonly signature: Hex;
+    readonly settlementPath?: SettlementPath | undefined;
     readonly signedGroundTruthValue: bigint;
     readonly signedScore: number;
     readonly agent: Address;
@@ -370,29 +415,27 @@ export async function verifyJob(input: JobVerifyInput): Promise<Check[]> {
         ...receiptChecks(input.receiptBody, input.anchoredReceiptHash, receipt),
     ];
 
-    const signer = await recoverOrZero(() =>
-        recoverTypedDataAddress({
-            domain: jobDomain(input.chainId, input.verifyingContract),
-            types: jobTypes,
-            primaryType: 'JobSettlement',
-            message: {
-                // A job receipt is a one-entry receipt keyed by jobId; see receipt.ts.
-                jobId: receipt.competitionId,
-                receiptHash: input.anchoredReceiptHash,
-                agent: input.agent,
-                score: input.signedScore,
-                groundTruthValue: input.signedGroundTruthValue,
-            },
-            signature: input.signature,
-        }),
-    );
-    checks.push(
-        verdict(
-            'EIP-712 signer is the registered TEE',
-            signer.toLowerCase() === input.registeredTee.toLowerCase(),
-            signer,
-        ),
-    );
+    const path = input.settlementPath ?? 'eip712';
+    const signer =
+        path === 'fcc'
+            ? zeroAddress
+            : await recoverOrZero(() =>
+                  recoverTypedDataAddress({
+                      domain: jobDomain(input.chainId, input.verifyingContract),
+                      types: jobTypes,
+                      primaryType: 'JobSettlement',
+                      message: {
+                          // A job receipt is a one-entry receipt keyed by jobId; see receipt.ts.
+                          jobId: receipt.competitionId,
+                          receiptHash: input.anchoredReceiptHash,
+                          agent: input.agent,
+                          score: input.signedScore,
+                          groundTruthValue: input.signedGroundTruthValue,
+                      },
+                      signature: input.signature,
+                  }),
+              );
+    checks.push(signerCheck(path, signer, input.registeredTee));
 
     checks.push(imageDigestCheck(receipt, input.registeredImageDigest));
     checks.push(
