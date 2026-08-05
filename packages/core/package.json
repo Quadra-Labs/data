@@ -15,6 +15,10 @@
         "./ground-truth": {
             "types": "./dist/groundTruth.d.ts",
             "import": "./dist/groundTruth.js"
+        },
+        "./verify": {
+            "types": "./dist/verify.d.ts",
+            "import": "./dist/verify.js"
         }
     },
     "files": [
