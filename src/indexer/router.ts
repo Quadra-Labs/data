@@ -37,6 +37,24 @@ export interface RouteStats {
     ignored: number;
     /** Logs that would not decode at all — the tell that an ABI has drifted from its contract. */
     undecodable: number;
+    /**
+     * What was applied, in order, for the push feed.
+     *
+     * Collected here rather than re-derived by the caller: this function has already decoded every
+     * log, and asking a subscriber to interpret a raw topic hash would be a worse API than the
+     * polling it replaces.
+     */
+    events: AppliedEvent[];
+}
+
+export interface AppliedEvent {
+    readonly kind: string;
+    readonly jobId?: string | undefined;
+    readonly competitionId?: string | undefined;
+    readonly agent?: string | undefined;
+    readonly blockNumber: number;
+    readonly txHash: string;
+    readonly atMs: number;
 }
 
 const eq = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
@@ -77,19 +95,22 @@ export function routeLogs(
     targets: RouterTargets,
     logs: readonly IndexedLog[],
 ): RouteStats {
-    const stats: RouteStats = { applied: 0, ignored: 0, undecodable: 0 };
+    const stats: RouteStats = { applied: 0, ignored: 0, undecodable: 0, events: [] };
     for (const entry of logs) {
-        const outcome = routeOne(db, targets, entry);
+        const outcome = routeOne(db, targets, entry, stats.events);
         stats[outcome] += 1;
     }
     return stats;
 }
 
+type Outcome = 'applied' | 'ignored' | 'undecodable';
+
 function routeOne(
     db: IndexDb,
     targets: RouterTargets,
     entry: IndexedLog,
-): keyof RouteStats {
+    applied: AppliedEvent[],
+): Outcome {
     const abi = eq(entry.address, targets.jobEscrow)
         ? jobEscrowAbi
         : eq(entry.address, targets.sealedCompetition)
@@ -121,6 +142,18 @@ function routeOne(
     }
 
     const a = decoded.args;
+    const note = (): void => {
+        applied.push({
+            kind: decoded.eventName,
+            jobId: a['jobId'] === undefined ? undefined : String(a['jobId']),
+            competitionId:
+                a['competitionId'] === undefined ? undefined : String(a['competitionId']),
+            agent: a['agent'] === undefined ? undefined : String(a['agent']),
+            blockNumber: entry.blockNumber,
+            txHash: entry.txHash,
+            atMs: entry.atMs,
+        });
+    };
     switch (decoded.eventName) {
         // --- JobEscrow --------------------------------------------------------------------------
         case 'JobPaid': {
@@ -146,6 +179,7 @@ function routeOne(
             // First sighting of an agent. Identity stays empty until the catalog fills it in;
             // `created_at` keeps the earliest of the two.
             db.upsertAgentIdentity({ wallet: agent, category, evaluatorId, createdAt: entry.atMs });
+            note();
             return 'applied';
         }
 
@@ -156,6 +190,7 @@ function routeOne(
                 ciphertextHash: String(a['ciphertextHash'] ?? ''),
                 txHash: entry.txHash,
             });
+            note();
             return 'applied';
         }
 
@@ -166,6 +201,7 @@ function routeOne(
                 earned: (a['agentAmount'] as bigint) ?? 0n,
                 fee: (a['fee'] as bigint) ?? 0n,
             });
+            note();
             return 'applied';
         }
 
@@ -183,6 +219,7 @@ function routeOne(
                 source: 'chain',
                 at: entry.atMs,
             });
+            note();
             return 'applied';
         }
 
@@ -193,6 +230,7 @@ function routeOne(
                 score: Number(a['score'] ?? 0),
                 receiptHash: String(a['receiptHash'] ?? ''),
             });
+            note();
             return 'applied';
         }
 
@@ -208,6 +246,7 @@ function routeOne(
                 source: 'chain',
                 at: entry.atMs,
             });
+            note();
             return 'applied';
         }
 
@@ -227,6 +266,7 @@ function routeOne(
                 blockNumber: entry.blockNumber,
                 at: entry.atMs,
             });
+            note();
             return 'applied';
         }
 
@@ -245,6 +285,7 @@ function routeOne(
                 creator: String(a['creator'] ?? ''),
                 createdBlock: entry.blockNumber,
             });
+            note();
             return 'applied';
         }
 
@@ -254,6 +295,7 @@ function routeOne(
                 agent: String(a['agent'] ?? ''),
                 stake: (a['stake'] as bigint) ?? 0n,
             });
+            note();
             return 'applied';
         }
 
@@ -265,6 +307,7 @@ function routeOne(
                 txHash: entry.txHash,
                 blockNumber: entry.blockNumber,
             });
+            note();
             return 'applied';
         }
 
@@ -276,6 +319,7 @@ function routeOne(
                 amount: (a['amount'] as bigint) ?? 0n,
                 blockNumber: entry.blockNumber,
             });
+            note();
             return 'applied';
         }
 
@@ -287,6 +331,7 @@ function routeOne(
                 // and what is left is dust the creator may reclaim.
                 totalPaid: (a['totalPaid'] as bigint) ?? 0n,
             });
+            note();
             return 'applied';
         }
 
@@ -295,6 +340,7 @@ function routeOne(
                 competitionId: String(a['competitionId']),
                 seedReturned: (a['seedReturned'] as bigint) ?? 0n,
             });
+            note();
             return 'applied';
         }
 
@@ -305,6 +351,7 @@ function routeOne(
                 competitionId: String(a['competitionId']),
                 amount: (a['amount'] as bigint) ?? 0n,
             });
+            note();
             return 'applied';
         }
 
@@ -313,6 +360,7 @@ function routeOne(
                 competitionId: String(a['competitionId']),
                 amount: (a['amount'] as bigint) ?? 0n,
             });
+            note();
             return 'applied';
         }
 

@@ -1,140 +1,132 @@
-# Quadra Data Layer
+# quadra-data
 
-Read / write / watch the Quadra databases over [Walrus](https://www.walrus.xyz/)
-and [Seal](https://github.com/MystenLabs/seal). A reusable TypeScript library
-plus a thin HTTP server.
+The read layer, the deterministic core, and the verifier.
 
-Every public database is one JSON document on Walrus behind an on-chain
-`JsonPointer` (via [`walrus-json`](../walrus-json)). Job results are private: each
-is Seal-encrypted and stored as its own blob, readable only by the job's user and
-agent — enforced on chain by `quadra::job_access::seal_approve`.
+Three packages live here:
 
-## Databases
+| Package | What it is |
+| --- | --- |
+| **`quadra-core`** (`packages/core`) | Pure, deterministic code — the scorer, the EIP-712 settlement format, the audit receipt, the dual-reader envelope. No chain access, no secrets, no native dependencies. Every other repo depends on it. |
+| **`quadra-verify`** (`packages/verify`) | A command that re-derives a settlement from chain data alone. |
+| **`quadra-data`** (this root) | An off-chain index of the Flare markets, plus the HTTP surface that serves it. |
 
-| Database              | Storage        | Notes                                                |
-| --------------------- | -------------- | ---------------------------------------------------- |
-| `agent_scores`        | Walrus, public | Equal-weight running average per agent wallet.       |
-| `agents`              | Walrus, public | Agent identity registry (`wallet, owner, category`). |
-| `delayed_failed_jobs` | Walrus, public | Append-only log of delayed/failed jobs.              |
-| `job_templates`       | Walrus, public | Exact lookup by template id.                         |
-| `eval_engines`        | Walrus, public | `evaluator_id` -> enclave HTTP URL (+ optional on-chain id). |
-| `job_scheduler`       | Walrus, public | `job_id -> expiry`; enumerate due jobs each epoch.   |
-| `job_results_index`   | Walrus, public | `job_id -> blobId` of the sealed result.             |
-| job results           | Seal, private  | One encrypted blob per job; user + agent only.       |
+## Why an index exists
 
-## Setup
+A chain is an append-only log, not a database. Coston2's public RPC offers one storage read at a
+time, or a log scan **capped at 30 blocks per request**. Measured on 2026-08-05:
 
-```bash
-npm install
-cp .env.example .env      # set DATA_SECRET_KEY (+ DATA_NETWORK) only
-npm run setup             # publishes both Move packages + creates the 7 pointers,
-                          # then writes every other value back into .env
-```
+| | |
+| --- | --- |
+| block time | 1.69 s |
+| blocks per day | 51,064 |
+| `eth_getLogs` requests to scan 30 days | **51,064** |
 
-`npm run setup` signs everything with your `DATA_SECRET_KEY` (no separate `sui`
-CLI account) — that address needs SUI (gas, for publishing) and WAL (storage, for
-the pointers), and the `sui` CLI must be on PATH (used only to compile the Move
-bytecode). It derives `WALRUS_JSON_PACKAGE_ID`, `QUADRA_PACKAGE_ID`,
-`JOB_ACCESS_REGISTRY_ID`, and all `POINTER_*`, and fills `SEAL_KEY_SERVER_IDS`
-with Mysten's allowlisted testnet key servers. On mainnet, supply those ids
-yourself from the Seal verified key servers list.
+A 50-agent leaderboard is 150 separate contract reads. "Jobs this buyer paid for last month" is the
+scan above, which the endpoint throttles long before it finishes. So the index does that walk once,
+in the background, and answers from disk after.
 
-Already have published packages? Use the lower-level `npm run bootstrap` instead,
-which only creates the seven pointers from an existing `WALRUS_JSON_PACKAGE_ID`.
+**Nothing in it is authoritative.** Delete the file and it rebuilds from the chain. Every value is
+re-readable from a contract. And `quadra-verify` never consults it — it reads calldata and contract
+storage only, because a verifier that trusted our server would not be a verifier. See
+`_migration/KNOWN-CONSTRAINTS.md` entry 3.
 
-For existing environments that predate `eval_engines`, run
-`npm run bootstrap-eval-engines` once to create only that pointer.
-
-## Library
-
-```ts
-import { DataLayer } from 'quadra-data';
-
-const dl = DataLayer.fromEnv();
-
-await dl.agents.register({ wallet, owner, category: 'finance' });
-await dl.agentScores.recordJob(wallet, 87); // folds into the running average
-await dl.jobScheduler.set(jobId, Date.now() + 300_000);
-const due = await dl.jobScheduler.due(); // for the scheduler engine
-
-// Private results
-await dl.jobResults.store(result); // encrypt + store + index
-const result = await dl.jobResults.decrypt(jobId, userOrAgentKeypair);
-
-// Watch
-const w = dl.createWatcher();
-w.on((change) => console.log(change.db, change.version));
-w.start();
-```
-
-Decryption requires the **caller's own key** (the job's user or agent). The
-server never decrypts — it only serves ciphertext.
-
-## Services (two processes)
+## Running it
 
 ```bash
-npm run serve     # REST writer  (port PORT=8787)
-npm run watch     # gRPC watcher + SSE  (port WATCH_PORT=8788)
-npm run indexer   # off-chain index: tails events into SQLite (INDEXER_DB_PATH)
+pnpm install
+pnpm serve            # gateway + indexer in one process, on :8787
 ```
 
-`npm run indexer` keeps a SQLite mirror (`INDEXER_DB_PATH`, default
-`quadra-index.db`) of the agent registry, scores, and jobs so the gateway can serve
-fast filtered/sorted/paginated reads (`GET /agents`, `/agents/query`,
-`/agents/:wallet`, `/agents/:wallet/jobs`) instead of enumerating the chain and
-fetching Walrus blobs per request. It cold-starts by seeding identity + scores from
-the registry/Walrus doc + historical events, then tails the checkpoint stream
-forward over native gRPC (HTTP/2 via `@grpc/grpc-js`), resuming from a persisted
-cursor. Native gRPC is required: the fullnode's grpc-web gateway caps long-lived
-streams at ~30s, while the HTTP/2 stream runs indefinitely. The gateway opens the
-same file read-only (WAL) and falls back to live reads when the index is absent or
-empty, so it runs with or without the indexer. Run it alongside `npm run serve` on
-the same host.
-
-REST writer = the **write gateway** (`server.ts`): the sole holder of
-`DATA_SECRET_KEY` and the only on-chain writer. `/agent-scores`, `/delayed-failed`,
-`/templates`, `/scheduler`, `/job-results`, plus read-only `/agents`.
-
-**Writes are role-gated.** Engines send a per-engine token (`x-quadra-role`,
-configured via `ROLE_TOKEN_INTAKE` / `_SCHEDULER` / `_ADMIN`); agents send a
-signed message (`x-quadra-ts` + `x-quadra-sig`). Reads are open. `admin` is a
-superuser **except** for `job_results` (agent-signature only).
-
-| Write                                               | Allowed by                              |
-| --------------------------------------------------- | --------------------------------------- | ---------------- |
-| `POST /agent-scores/record`, `POST /delayed-failed` | scheduler, admin                        |
-| `PUT /scheduler/:id`                                | intake, admin · `DELETE /scheduler/:id` | scheduler, admin |
-| `PUT /templates`                                    | admin                                   |
-| `GET /eval-engines`, `PUT /eval-engines/:id`, `DELETE /eval-engines/:id` | admin (reads open) |
-| `POST /job-results` (sealed envelope)               | agent signature (registered) only       |
-
-`GET /agents` / `/agents/:wallet` read the **on-chain** `agent::AgentRegistry`;
-agents register on chain (`agent::register_agent`), not through the gateway.
-
-Engines write through the gateway with `GatewayClient({ url, roleToken })` and
-read with `DataLayer.forReads()` (an ephemeral key — they never hold the master
-key). Only the gateway does Walrus writes, so engines stay watcher-friendly.
-Test: `npm run test:gateway`.
-
-Watch service (`watch-server.ts`): `GET /watch` streams `PointerUpdated` changes
-as Server-Sent Events. It subscribes to the Sui **gRPC checkpoint stream**
-(`SubscriptionService.subscribeCheckpoints`) — a true push stream — scans each
-checkpoint for `pointer::PointerUpdated`, and on reconnect backfills missed
-checkpoints via `getCheckpoint` (so no event is dropped). Override the endpoint
-with `DATA_GRPC_URL`; tune reconnect with `WATCH_RECONNECT_MS`.
-
-**Why two processes:** the long-lived gRPC stream cannot survive in a process that
-also performs Walrus blob writes — the write storm starves the shared event
-loop/connections and the stream never recovers. The watcher therefore runs on its
-own (write-free) process, where the stream is rock-solid.
-
-## Verify
+No configuration is required. Addresses come from `contracts/deployments/<chainId>.json`, and the
+indexer finds its own start block by binary search over `eth_getCode`. Copy `.env.example` to
+`.env` only to override something.
 
 ```bash
-npm run typecheck
-npm run sandbox   # full round-trip incl. Seal allow/deny + watch (needs a live env)
+pnpm indexer          # the indexer alone, for a split deployment
+pnpm sandbox          # the narrated end-to-end run
+pnpm print-addresses  # what this deployment points at, and whether it holds code
+pnpm typecheck
 ```
 
-The on-chain access policy is also unit-tested in
-[`../contracts/tests/quadra_tests.move`](../contracts/tests/quadra_tests.move)
-(`test_seal_access_user_and_agent`, `test_seal_access_third_party_denied`).
+Splitting the two processes means sharing `INDEXER_DB_PATH` **on one host** — SQLite WAL is one
+writer and many readers, on one filesystem. The Sui deployment split them because a long-lived gRPC
+stream could not survive alongside Walrus writes; neither of those exists now, so one process is
+the default.
+
+## The HTTP surface
+
+Every read has two paths — the index when it is current, the chain when it is not — so the gateway
+works before the indexer has ever run.
+
+| | |
+| --- | --- |
+| `GET /health` | Always 200 while the process answers. Reports `ok` / `warming` / `degraded`, the cursor lag, and any warnings. |
+| `GET /ready` | 503 until the index is current. Liveness and readiness are separate on purpose. |
+| `GET /agents`, `/agents/query`, `/agents/:wallet` | Identity from the catalog, everything scored from the chain. |
+| `GET /agents/:wallet/jobs`, `/users/:user/jobs` | Job history either side of a trade. |
+| `GET /passport/:agent/:evaluatorId` | Straight from the contract, always. |
+| `GET /jobs/:jobId`, `/jobs/recent`, `/jobs/due` | `/jobs/due` is what lets a keeper stop guessing with a lookback scan. |
+| `GET /jobs/:jobId/ciphertext` | The delivered result, recovered from `deliver` calldata. A convenience — `quadra-verify` recovers it itself. |
+| `GET /competitions`, `/competitions/:id` | |
+| `GET /stats/activity`, `/delayed-failed` | |
+| `GET /ground-truth?feed&round` | A cached mirror of Flare's DA layer, **for display only**. |
+| `GET /watch` | Server-sent events for everything the indexer applies. |
+| `POST /agent-endpoints` | The one write. Signed by the agent's own key. |
+
+Money is returned as **decimal strings**, not numbers. QUADRA has 18 decimals; a client parsing
+`"1000000000000000000"` into a JS number would silently round it.
+
+### Why there is only one write
+
+The Sui gateway held the only key and accepted scores, schedules and templates over HTTP behind
+three role tokens. None of that survives. On Flare each writer holds its own key and writes on
+chain, where the contract checks it — authorization is a contract check, not a shared secret. What
+remains is an agent publishing a URL, which genuinely has no business on a ledger.
+
+## The verifier
+
+```bash
+pnpm --filter quadra-verify exec quadra-verify job 0xabc… --tx 0xdef…
+```
+
+Given a job or competition id it re-derives the settlement: the published receipt hashes to the
+anchored hash, the signature recovers to the registered TEE, the receipt names the registered
+image, the sealed commitments match what was locked in before the answer was known, the ground
+truth re-fetched from Flare's DA layer agrees, and replaying the scorer reproduces every score.
+
+Checks report `PASS`, `FAIL` or `SKIP`. Skipped is a real state, not a quiet pass — a paid job's
+score can only be replayed by the buyer, because the result stays private forever.
+
+`--tx` is a search hint. It bounds the log scan to the settle block, which is the difference
+between a few requests and a few thousand. Every check still re-derives independently.
+
+## The sandbox
+
+```bash
+pnpm sandbox              # all five steps
+pnpm sandbox -- verify    # one of them
+```
+
+1. **index** — the read layer against live Coston2
+2. **envelope** — a forecast sealed so the buyer and the TEE can read it and the operator cannot
+3. **oracle** — the real ground-truth path against a mock DA layer, offline
+4. **watch** — the push feed
+5. **verify** — a full settlement replay, then the same settlement forged, then one score altered
+
+Steps 2 to 5 need no chain and no keys.
+
+## What changed from the Sui version
+
+The storage half is gone. Seven mutable JSON documents on Walrus behind Sui pointers, Seal-encrypted
+results, a write-behind queue and a privileged writer all disappear, because on Flare the chain
+holds what they held:
+
+| | Sui | Flare |
+| --- | --- | --- |
+| Reputation | a Walrus JSON file | `Passport.sol` |
+| Job results | a Seal-encrypted blob | `deliver` calldata, dual-reader ECIES |
+| Result access | a contract check plus key servers | arithmetic — only two wraps exist |
+| Who may write scores | the gateway's key, behind a role token | a TEE signature the contract verifies |
+| Templates | an admin-editable document | compiled into `quadra-core` |
+
+The read half survived, and matters more here than it did there.

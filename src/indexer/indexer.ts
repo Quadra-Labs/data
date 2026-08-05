@@ -92,7 +92,7 @@ export async function main(): Promise<void> {
             : `cold start from block ${fromBlock}, ${behind} blocks to walk`,
     );
 
-    const totals: RouteStats = { applied: 0, ignored: 0, undecodable: 0 };
+    const totals: RouteStats = { applied: 0, ignored: 0, undecodable: 0, events: [] };
     let lastReport = 0;
 
     const tailer = startTailer({

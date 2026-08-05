@@ -21,6 +21,7 @@ import { IndexDb } from './indexer/db.js';
 import { routeLogs } from './indexer/router.js';
 import { startTailer, type TailerHandle } from './indexer/tailer.js';
 import { findEarliestDeployBlock } from './indexer/deployBlock.js';
+import { makeEventBus } from './server/events.js';
 
 export async function main(): Promise<void> {
     const loaded = loadConfig();
@@ -31,13 +32,16 @@ export async function main(): Promise<void> {
     }
     const cfg = loaded.config;
     const client = makeClient(cfg);
-    const app = buildApp({ config: cfg, client });
+    const runsIndexer = (process.env['INDEXER'] ?? '1') !== '0';
+    // Only offer the push feed when this process is the one producing events.
+    const events = runsIndexer ? makeEventBus() : undefined;
+    const app = buildApp({ config: cfg, client, events });
 
     // --- the indexer, in-process by default ------------------------------------------------------
     let db: IndexDb | undefined;
     let tailer: TailerHandle | undefined;
 
-    if ((process.env['INDEXER'] ?? '1') !== '0') {
+    if (runsIndexer) {
         db = new IndexDb(cfg.indexerDbPath);
         const targets = {
             jobEscrow: cfg.jobEscrow,
@@ -77,6 +81,9 @@ export async function main(): Promise<void> {
                 if (stats.undecodable > 0) {
                     app.log.warn(`${stats.undecodable} logs did not decode; check the ABIs`);
                 }
+                // Published AFTER the batch commits, so a subscriber can never be told about
+                // something a reader cannot yet see.
+                for (const e of stats.events) events?.publish(e);
             },
             onProgress: (cursor) => owned.setCursor(cursor),
             onReorg: (toBlock) => {

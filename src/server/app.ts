@@ -27,6 +27,7 @@ import { Cached, KeyedCache } from '../cache.js';
 import { makeReadLayer, type ReadLayer } from './readLayer.js';
 import { serialize } from './json.js';
 import { verifyAgentSignature, isPublishableUrl } from './auth.js';
+import { SSE_HEADERS, SSE_HEARTBEAT_MS, sseFrame, type EventBus } from './events.js';
 import { IndexDb } from '../indexer/db.js';
 
 export interface AppOptions {
@@ -34,6 +35,8 @@ export interface AppOptions {
     readonly client: PublicClient;
     /** Injected so tests can supply an in-memory database instead of a file. */
     readonly readLayer?: ReadLayer | undefined;
+    /** The indexer's in-process feed, when the gateway runs it. */
+    readonly events?: EventBus | undefined;
 }
 
 interface RawBodyRequest extends FastifyRequest {
@@ -434,6 +437,35 @@ export function buildApp(opts: AppOptions): FastifyInstance {
         } catch (err) {
             return bad(reply, 502, 'da_unreachable', err instanceof Error ? err.message : 'unknown');
         }
+    });
+
+    // --- push feed -------------------------------------------------------------------------------
+
+    /**
+     * Server-sent events for everything the indexer applies.
+     *
+     * The alternative is every UI polling a rate-limited RPC, which is what the index exists to
+     * avoid. Runs only when the gateway owns the indexer; in a split deployment there is nothing
+     * in this process to forward.
+     */
+    app.get('/watch', async (req, reply) => {
+        if (!opts.events) {
+            return bad(reply, 503, 'no_feed', 'this gateway does not run the indexer');
+        }
+        reply.raw.writeHead(200, { ...SSE_HEADERS, 'access-control-allow-origin': cfg.corsOrigin });
+        reply.raw.write(`event: ready\ndata: {"chainId":${cfg.chainId}}\n\n`);
+
+        const unsubscribe = opts.events.subscribe((event) => {
+            reply.raw.write(sseFrame(event));
+        });
+        // A comment line, so an idle connection is not reaped by a proxy as dead.
+        const heartbeat = setInterval(() => reply.raw.write(': ping\n\n'), SSE_HEARTBEAT_MS);
+
+        req.raw.on('close', () => {
+            clearInterval(heartbeat);
+            unsubscribe();
+        });
+        return reply;
     });
 
     // --- the one write ---------------------------------------------------------------------------
