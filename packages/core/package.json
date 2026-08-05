@@ -1,0 +1,39 @@
+{
+    "name": "quadra-core",
+    "version": "1.0.0",
+    "description": "The pure, deterministic core of Quadra: scorers, the EIP-712 settlement format, the audit receipt, and the dual-reader envelope. No chain I/O, no secrets, no native dependencies, so a settlement can be replayed to byte-identical results by anyone.",
+    "license": "Apache-2.0",
+    "type": "module",
+    "main": "./dist/index.js",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js"
+        }
+    },
+    "files": [
+        "dist"
+    ],
+    "scripts": {
+        "build": "tsup",
+        "dev": "tsup --watch",
+        "typecheck": "tsc --noEmit"
+    },
+    "keywords": [
+        "quadra",
+        "flare",
+        "eip-712",
+        "tee",
+        "confidential-compute"
+    ],
+    "engines": {
+        "node": ">=20.12"
+    },
+    "dependencies": {
+        "ecies-geth": "^1.8.0",
+        "eciesjs": "^0.4.11",
+        "viem": "^2.21.0"
+    }
+}

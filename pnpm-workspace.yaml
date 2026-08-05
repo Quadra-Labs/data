@@ -1,4 +1,11 @@
+packages:
+    - 'packages/*'
+
+# secp256k1 is a transitive dependency of ecies-geth. It MUST NOT be built natively:
+# the evaluation engine's TEE image hash is its on-chain identity, and a node-gyp build
+# bakes host paths into the artifact, so the same source would produce a different hash
+# on every build machine. The pure-JS fallback is slower and correct.
 allowBuilds:
-  better-sqlite3: true
-  esbuild: true
-  protobufjs: true
+    better-sqlite3: true
+    esbuild: true
+    secp256k1: false
