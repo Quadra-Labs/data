@@ -100,6 +100,7 @@ export async function main(): Promise<void> {
         addresses,
         fromBlock,
         chunk: cfg.logChunkBlocks,
+        passSpanBlocks: cfg.passSpanBlocks,
         confirmations: cfg.confirmations,
         pollMs: cfg.pollMs,
         ...(start ? { startCursor: start } : {}),
@@ -135,9 +136,17 @@ export async function main(): Promise<void> {
             }
         },
 
-        onReorg: (toBlock) => {
-            log(`REORG: the chain changed under the cursor; rolling back above block ${toBlock}`);
-            db.batch(() => db.rollbackAbove(toBlock));
+        onReorg: (rewound: TailerCursor) => {
+            log(
+                `REORG: the chain changed under the cursor; rolling back above block ${rewound.blockNumber}`,
+            );
+            // Both halves in ONE transaction. Deleting the orphaned rows without moving the
+            // cursor would leave a restart resuming ABOVE the hole, and the missing blocks would
+            // never be re-indexed — an index that under-reports with no error to show for it.
+            db.batch(() => {
+                db.rollbackAbove(rewound.blockNumber);
+                db.setCursor(rewound);
+            });
         },
 
         onScan: (scanned, block) => {
@@ -159,7 +168,8 @@ export async function main(): Promise<void> {
         log(`${signal} received, stopping`);
         tailer.stop();
         await tailer.done;
-        // The cursor is already persisted on every pass; closing cleanly is what avoids a
+        // Every pass commits a bounded amount of work and its cursor together — including a
+        // reorg rewind — so there is nothing to flush here; closing cleanly is what avoids a
         // stale WAL that the read-only gateway would then have to recover.
         db.close();
         log(`stopped (${totals.applied} events applied this run)`);

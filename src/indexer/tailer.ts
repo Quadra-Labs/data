@@ -9,8 +9,11 @@
  *
  *   - **No silent gaps.** The Sui tailer capped a backfill at 500 checkpoints, logged
  *     "gap too large; skipping", and then advanced the cursor anyway — so an hour of downtime
- *     permanently lost every event in it with only a console line to show. There is no cap here.
- *     A large gap is slow, not lossy.
+ *     permanently lost every event in it with only a console line to show. Here a pass is capped
+ *     at `passSpanBlocks`, but the cap bounds the unit of COMMIT, not the range walked: every
+ *     span applies its logs and persists its cursor before the next span starts, and nothing is
+ *     ever skipped. A large gap is slow, not lossy — and a crash mid-backfill resumes from the
+ *     last span instead of starting over.
  *   - **Reorg tolerance**, which Sui checkpoints never needed. The cursor stays `confirmations`
  *     blocks behind the head, and the cursor block's hash is re-read every pass: if it changed,
  *     the chain reorganised under us and we rewind rather than carry on with orphaned rows.
@@ -47,8 +50,10 @@ export interface TailerCallbacks {
     readonly onLogs: (logs: readonly IndexedLog[]) => Promise<void> | void;
     /** The pass completed; persist this cursor. */
     readonly onProgress: (cursor: TailerCursor) => Promise<void> | void;
-    /** A reorg was detected. Roll back above `toBlock`, then indexing resumes from there. */
-    readonly onReorg: (toBlock: number) => Promise<void> | void;
+    /** A reorg was detected. Roll back above `rewound.blockNumber` AND persist `rewound` as the
+     *  cursor, in ONE transaction: a committed delete with an uncommitted cursor is unrecoverable
+     *  — a crash before the next pass would resume past the deleted rows and never re-index them. */
+    readonly onReorg: (rewound: TailerCursor) => Promise<void> | void;
     /** A long historical walk is running, so it does not look hung. */
     readonly onScan?: ((scanned: number, block: bigint) => void) | undefined;
     readonly onError?: ((message: string, expected: boolean) => void) | undefined;
@@ -62,6 +67,12 @@ export interface TailerOptions extends TailerCallbacks {
     readonly fromBlock: bigint;
     /** Blocks per getLogs window. */
     readonly chunk: bigint;
+    /**
+     * Max blocks one pass may cover, so `onLogs` + `onProgress` run per span and the cursor
+     * advances DURING a long backfill rather than only at the end of it. Defaults to
+     * `DEFAULT_PASS_SPAN`.
+     */
+    readonly passSpanBlocks?: bigint | undefined;
     /** How far behind the head the cursor stays, to absorb a reorg. */
     readonly confirmations: number;
     /** How long to wait between passes when already caught up. */
@@ -84,6 +95,16 @@ export interface TailerHandle {
 }
 
 const MAX_BACKOFF_MS = 30_000;
+
+/**
+ * How much history one pass commits at a time.
+ *
+ * At Coston2's ~1.7s blocks this is a bit over two hours of chain, about 167 `eth_getLogs`
+ * windows at the public endpoint's 30-block cap. So a cold start durably commits every ~167
+ * requests instead of holding ~35,000 requests' worth of logs in memory and writing nothing
+ * until the whole walk finishes. The cost per span is one extra `getBlock` and one `setCursor`.
+ */
+const DEFAULT_PASS_SPAN = 5_000n;
 
 /**
  * Run one catch-up pass and return the new cursor, or undefined when there is nothing to do.
@@ -115,19 +136,43 @@ export async function runPass(opts: TailerOptions): Promise<TailerCursor | undef
                 Number(opts.fromBlock) - 1,
                 cursor.blockNumber - Math.max(1, opts.confirmations),
             );
-            await opts.onReorg(rewindTo);
-            return { blockNumber: rewindTo, blockHash: '' };
+            // Re-read the rewind height by NUMBER, so this is the hash on the chain we are now
+            // following. Returning an empty hash instead would disable the check at the top of
+            // the next pass entirely, and a second fork arriving immediately would go unnoticed.
+            const anchor =
+                rewindTo >= 0
+                    ? await opts.client
+                          .getBlock({ blockNumber: BigInt(rewindTo) })
+                          .catch(() => undefined)
+                    : undefined;
+            const rewound: TailerCursor = { blockNumber: rewindTo, blockHash: anchor?.hash ?? '' };
+            // Before the rollback, not after: `rollbackAbove` deletes blocks ABOVE this height, so
+            // the row for the rewind block itself survives and stays consistent with the cursor.
+            if (anchor?.hash) {
+                opts.rememberBlock?.(rewindTo, Number(anchor.timestamp) * 1000, anchor.hash);
+            }
+            // The handler owns both halves — the delete and the cursor move — in one transaction.
+            await opts.onReorg(rewound);
+            return rewound;
         }
     }
 
     const from = cursor ? BigInt(cursor.blockNumber) + 1n : opts.fromBlock;
     if (from > safeHead) return undefined; // already caught up
 
+    // Bound one pass. The range is inclusive at both ends, hence `- 1n`: `from + span` would
+    // cover span+1 blocks and overlap the next pass by one.
+    const span =
+        opts.passSpanBlocks !== undefined && opts.passSpanBlocks > 0n
+            ? opts.passSpanBlocks
+            : DEFAULT_PASS_SPAN;
+    const to = safeHead - from + 1n > span ? from + span - 1n : safeHead;
+
     // --- fetch ----------------------------------------------------------------------------------
     const raw = await getLogsChunked<Log>({
         client: opts.client,
         fromBlock: from,
-        toBlock: safeHead,
+        toBlock: to,
         chunk: opts.chunk,
         ...(opts.onScan ? { onProgress: opts.onScan } : {}),
         fetch: async (lo, hi) => {
@@ -167,13 +212,14 @@ export async function runPass(opts: TailerOptions): Promise<TailerCursor | undef
 
     // --- advance --------------------------------------------------------------------------------
     // The cursor carries the hash of the block it stops on, which is what makes the next pass's
-    // reorg check possible at all.
-    const tip = await opts.client.getBlock({ blockNumber: safeHead }).catch(() => undefined);
+    // reorg check possible at all. `to`, not `safeHead`: a span-bounded pass commits only what it
+    // actually walked, and the loop re-enters immediately to walk the next span.
+    const tip = await opts.client.getBlock({ blockNumber: to }).catch(() => undefined);
     const next: TailerCursor = {
-        blockNumber: Number(safeHead),
+        blockNumber: Number(to),
         blockHash: tip?.hash ?? '',
     };
-    if (tip?.hash) opts.rememberBlock?.(Number(safeHead), Number(tip.timestamp) * 1000, tip.hash);
+    if (tip?.hash) opts.rememberBlock?.(Number(to), Number(tip.timestamp) * 1000, tip.hash);
     await opts.onProgress(next);
     return next;
 }
@@ -227,7 +273,7 @@ export function startTailer(opts: TailerOptions): TailerHandle {
                 if (next) cursor = next;
                 failures = 0;
                 // Caught up: wait a poll interval. Behind: go straight round again, because the
-                // pass stopped at the confirmed head and there may be much more history to walk.
+                // pass stopped at the end of its span and there may be much more history to walk.
                 await sleep(next === undefined ? opts.pollMs : 0);
             } catch (err) {
                 failures += 1;

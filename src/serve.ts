@@ -70,6 +70,7 @@ export async function main(): Promise<void> {
             addresses,
             fromBlock,
             chunk: cfg.logChunkBlocks,
+            passSpanBlocks: cfg.passSpanBlocks,
             confirmations: cfg.confirmations,
             pollMs: cfg.pollMs,
             ...(db.getCursor() ? { startCursor: db.getCursor() } : {}),
@@ -86,9 +87,14 @@ export async function main(): Promise<void> {
                 for (const e of stats.events) events?.publish(e);
             },
             onProgress: (cursor) => owned.setCursor(cursor),
-            onReorg: (toBlock) => {
-                app.log.warn(`reorg: rolling back above block ${toBlock}`);
-                owned.batch(() => owned.rollbackAbove(toBlock));
+            onReorg: (rewound) => {
+                app.log.warn(`reorg: rolling back above block ${rewound.blockNumber}`);
+                // One transaction, same reasoning as the standalone indexer: a committed delete
+                // with an unmoved cursor loses those blocks permanently on the next restart.
+                owned.batch(() => {
+                    owned.rollbackAbove(rewound.blockNumber);
+                    owned.setCursor(rewound);
+                });
             },
             onError: (message, expected) => {
                 if (expected) app.log.warn(`indexer transient: ${message}`);

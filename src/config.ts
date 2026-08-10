@@ -39,6 +39,8 @@ export interface DataConfig {
     readonly confirmations: number;
     /** Blocks per `eth_getLogs` window. The single most important knob on a public RPC. */
     readonly logChunkBlocks: bigint;
+    /** Blocks one pass commits at a time, so a long backfill advances the cursor as it goes. */
+    readonly passSpanBlocks: bigint;
     /** Beyond this lag the index is considered cold and reads fall back to live. */
     readonly maxLagBlocks: number;
 
@@ -125,6 +127,7 @@ export function loadConfig(): ConfigResult {
             // difference between a rollback that rewinds cleanly and one that cannot.
             confirmations: num('CONFIRMATIONS', 5),
             logChunkBlocks: BigInt(env('LOG_CHUNK_BLOCKS') || String(DEFAULT_LOG_CHUNK)),
+            passSpanBlocks: BigInt(env('INDEXER_PASS_SPAN_BLOCKS') || '5000'),
             maxLagBlocks: num('MAX_LAG_BLOCKS', 200),
 
             port: num('PORT', 8787),
