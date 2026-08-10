@@ -2,9 +2,15 @@
  * abis.ts — the contract surface the read layer consults.
  *
  * Written as human-readable signatures rather than JSON so a reader can check them against the
- * Solidity by eye. They are verified against the compiled artifacts in `contracts/abi/` by test,
- * because a hand-written ABI that drifts from its contract fails at runtime with an opaque decode
- * error rather than at build time.
+ * Solidity by eye. A hand-written ABI that drifts from its contract does not fail at build time —
+ * it fails at runtime with an opaque decode error, or decodes to plausible garbage.
+ *
+ * Two things keep them honest, and only the first ships:
+ *   - `contracts/script/abi.sh --check` proves `contracts/abi/*.json` still matches `src/`. Run it
+ *     after any contract change and before any redeploy.
+ *   - a local working test compares every signature below against those artifacts. It is not
+ *     carried in the repo, so treat abi.sh as the control and re-check these by eye when a
+ *     contract signature or event moves.
  *
  * This is deliberately NOT the same file as `quadra-verify`'s ABI. That one is trimmed to the
  * minimum a verifier needs, so a reader can confirm at a glance what the audit consults; this one
