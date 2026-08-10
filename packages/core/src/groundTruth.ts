@@ -83,11 +83,25 @@ interface RawAnchorFeed {
  *
  * Matches on the feed id rather than taking the first element: the endpoint accepts several feeds
  * per request and answers with an array, so position is not a contract.
+ *
+ * A mismatch is a fault, never a convenience, so there is deliberately no fall back to the first
+ * element. Scoring an ETH forecast against the BTC anchor is the worst failure available here: the
+ * Merkle proof still verifies on chain (it is a real feed at a real round) and `checkGroundTruth`
+ * still matches the signed value (the TEE signed the same wrong number), so the settlement
+ * succeeds and the score is permanently, verifiably wrong with nothing to point at.
  */
 export function parseAnchorFeed(raw: unknown, feedId: Hex): FeedDataWithProof {
     const list = Array.isArray(raw) ? (raw as RawAnchorFeed[]) : [raw as RawAnchorFeed];
-    const match = list.find((f) => f.body?.id?.toLowerCase() === feedId.toLowerCase()) ?? list[0];
-    const body = match?.body;
+    const want = feedId.toLowerCase();
+    const match = list.find((f) => f.body?.id?.toLowerCase() === want);
+    if (!match) {
+        const got = list.map((f) => f.body?.id ?? '<no id>').join(', ');
+        throw new Error(
+            `ground-truth: asked the DA layer for feed ${feedId} but it answered with [${got}]; ` +
+                'scoring against a different asset would settle a wrong result that still verifies on chain',
+        );
+    }
+    const body = match.body;
     if (
         !body ||
         body.value === undefined ||
@@ -100,10 +114,13 @@ export function parseAnchorFeed(raw: unknown, feedId: Hex): FeedDataWithProof {
         );
     }
     return {
-        proof: (match?.proof ?? []).map((p) => p as Hex),
+        proof: (match.proof ?? []).map((p) => p as Hex),
         body: {
             votingRoundId: body.votingRoundId,
-            id: (body.id ?? feedId) as Hex,
+            // `body.id`, not `?? feedId`: the match above already proves they are equal, and
+            // relabelling with the REQUESTED id is precisely what let a wrong feed through
+            // wearing the right name.
+            id: body.id as Hex,
             value: body.value,
             // The DA layer returns `turnoutBIPS`; the Solidity struct field is `turnoutBPS`.
             // Reading the wrong one silently yields 0, which breaks the on-chain Merkle proof —
