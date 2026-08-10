@@ -23,6 +23,10 @@
         "./deployments": {
             "types": "./dist/deployments.d.ts",
             "import": "./dist/deployments.js"
+        },
+        "./fcc": {
+            "types": "./dist/fcc.d.ts",
+            "import": "./dist/fcc.js"
         }
     },
     "files": [

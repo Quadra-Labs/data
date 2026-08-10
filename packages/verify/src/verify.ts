@@ -80,10 +80,7 @@ export async function verifyJobById(jobId: Hex, opts: VerifyOptions): Promise<Ch
     let revealed: Record<string, string> | undefined;
     if (opts.userPrivateKey) {
         try {
-            revealed = openEnvelope(
-                opts.userPrivateKey,
-                await fetcher.deliveredCiphertext(jobId),
-            );
+            revealed = openEnvelope(opts.userPrivateKey, await fetcher.deliveredCiphertext(jobId));
         } catch {
             revealed = undefined;
         }
@@ -104,6 +101,10 @@ export async function verifyJobById(jobId: Hex, opts: VerifyOptions): Promise<Ch
         deliveredHash,
         refetchedGroundTruth,
         revealed,
+        // On the FCC path these came out of the attested blob. If it did not decode they are
+        // placeholders, and the checks that consume them must skip rather than report red.
+        signedValuesAvailable: settlement.blobDecoded ?? true,
+        blobReceiptHash: settlement.blobReceiptHash,
     });
 }
 
@@ -142,6 +143,8 @@ export async function verifyCompetitionById(
         verifyingContract: opts.sealedCompetition,
         commitments,
         refetchedGroundTruth,
+        signedValuesAvailable: settlement.blobDecoded ?? true,
+        blobReceiptHash: settlement.blobReceiptHash,
     });
 }
 

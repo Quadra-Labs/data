@@ -18,6 +18,7 @@ import {
     type PublicClient,
 } from 'viem';
 import { getLogsChunked } from 'quadra-core';
+import { decodeTeeCompetitionSettlement, decodeTeeJobScore } from 'quadra-core/fcc';
 import type { SettlementPath } from 'quadra-core/verify';
 
 import { jobEscrowVerifyAbi, sealedCompetitionVerifyAbi, teeRegistryVerifyAbi } from './abis.js';
@@ -60,6 +61,20 @@ export interface FetchedSettlement {
     readonly score?: number;
     readonly agent?: Address;
     readonly txHash: Hex;
+    /**
+     * FCC path only: whether the attested result blob decoded against this build's struct layout.
+     *
+     * `false` means the values above are placeholders, NOT that the settlement is wrong — so the
+     * checks that consume them must report `skipped`, never `fail`. Absent on the EIP-712 path,
+     * where every value came from a named calldata argument.
+     */
+    readonly blobDecoded?: boolean;
+    /**
+     * FCC path only: the receipt hash the enclave itself put in the signed blob. The contract only
+     * checks `keccak(receipt) == receiptHash` internally, so comparing this against the anchored
+     * value is a re-derivation the FCC path otherwise has nowhere to get.
+     */
+    readonly blobReceiptHash?: Hex;
 }
 
 function makeClient(config: VerifyChainConfig): PublicClient {
@@ -213,15 +228,36 @@ export function makeVerifyFetcher(config: VerifyChainConfig): VerifyFetcher {
                 };
             }
             if (decoded.functionName === 'scoreJobFromTee') {
-                // The ground truth and score are inside the abi-encoded TEE result blob rather
-                // than in named arguments, so read them from the event and the receipt instead.
-                return {
-                    ...common,
-                    signature: '0x',
-                    settlementPath: 'fcc',
-                    groundTruthValue: 0n,
-                    ...(scoredLog?.args.score !== undefined ? { score: scoredLog.args.score } : {}),
-                };
+                // The ground truth and the score are inside the abi-encoded TEE result blob rather
+                // than in named arguments, so decode the blob. Reading only the event would leave
+                // `groundTruthValue` at zero, and the oracle checks would then compare the
+                // receipt against nothing and report a real settlement as failed.
+                const [resultData] = decoded.args;
+                try {
+                    const s = decodeTeeJobScore(resultData);
+                    return {
+                        ...common,
+                        signature: '0x',
+                        settlementPath: 'fcc',
+                        groundTruthValue: s.groundTruthValue,
+                        score: s.score,
+                        blobDecoded: true,
+                        blobReceiptHash: s.receiptHash,
+                    };
+                } catch {
+                    // A layout this build does not recognise. Degrade to placeholders and SAY SO,
+                    // so the affected checks skip with a reason instead of printing red.
+                    return {
+                        ...common,
+                        signature: '0x',
+                        settlementPath: 'fcc',
+                        groundTruthValue: 0n,
+                        blobDecoded: false,
+                        ...(scoredLog?.args.score !== undefined
+                            ? { score: scoredLog.args.score }
+                            : {}),
+                    };
+                }
             }
             throw new Error(
                 `verify: the receipt for job ${jobId} was published by "${decoded.functionName}", ` +
@@ -283,13 +319,31 @@ export function makeVerifyFetcher(config: VerifyChainConfig): VerifyFetcher {
                 };
             }
             if (decoded.functionName === 'settleFromTee') {
-                return {
-                    ...common,
-                    signature: '0x',
-                    settlementPath: 'fcc',
-                    groundTruthValue: 0n,
-                    entries: [],
-                };
+                // Same reasoning as the job path: the entry list and the ground truth live in the
+                // signed blob, and an empty entry set would make the payout-set and replay checks
+                // fail on a settlement that is perfectly correct.
+                const [resultData] = decoded.args;
+                try {
+                    const s = decodeTeeCompetitionSettlement(resultData);
+                    return {
+                        ...common,
+                        signature: '0x',
+                        settlementPath: 'fcc',
+                        groundTruthValue: s.groundTruthValue,
+                        entries: s.entries.map((e) => ({ agent: e.agent, score: e.score })),
+                        blobDecoded: true,
+                        blobReceiptHash: s.receiptHash,
+                    };
+                } catch {
+                    return {
+                        ...common,
+                        signature: '0x',
+                        settlementPath: 'fcc',
+                        groundTruthValue: 0n,
+                        entries: [],
+                        blobDecoded: false,
+                    };
+                }
             }
             throw new Error(
                 `verify: the receipt for competition ${competitionId} was published by ` +

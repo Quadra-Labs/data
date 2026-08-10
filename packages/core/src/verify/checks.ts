@@ -15,12 +15,7 @@ import { keccak256, recoverTypedDataAddress, zeroAddress, type Address, type Hex
 import { canonicalize, receiptHash, type Receipt } from '../receipt.js';
 import { normalizeToPrice } from '../feeds.js';
 import { replayability, type Scorer } from '../scorers/index.js';
-import {
-    competitionDomain,
-    competitionTypes,
-    jobDomain,
-    jobTypes,
-} from '../eip712.js';
+import { competitionDomain, competitionTypes, jobDomain, jobTypes } from '../eip712.js';
 
 /**
  * `skipped` is a distinct outcome, not a quiet pass.
@@ -90,6 +85,30 @@ const verdict = (label: string, ok: boolean, detail?: string): Check =>
 
 const skip = (label: string, reason: string): Check => make(label, 'skipped', reason);
 
+/**
+ * FCC path: the receipt hash the ENCLAVE signed matches the one anchored in contract storage.
+ *
+ * On the EIP-712 path the signature covers `receiptHash` directly, so recovering the signer
+ * already proves this. The FCC path has no equivalent — the contract only checks
+ * `keccak(receipt) == receiptHash` internally, both values coming from the same blob — so until
+ * the blob was decodable there was nothing tying the attested receipt to the stored one at all.
+ * Decoding it makes this a genuinely new re-derivation rather than a restatement.
+ */
+function blobReceiptCheck(
+    path: SettlementPath,
+    blobReceiptHash: Hex | undefined,
+    anchoredReceiptHash: Hex,
+): Check | undefined {
+    if (path !== 'fcc') return undefined; // covered by the signature on the other path
+    const label = 'the attested result commits to the anchored receipt';
+    if (blobReceiptHash === undefined) return skip(label, BLOB_UNAVAILABLE);
+    return verdict(
+        label,
+        blobReceiptHash.toLowerCase() === anchoredReceiptHash.toLowerCase(),
+        `blob=${blobReceiptHash}`,
+    );
+}
+
 /** Parse the on-chain receipt body. Throws with a readable message rather than a JSON error. */
 export function parseReceipt(receiptBody: Hex): Receipt {
     const text = Buffer.from(receiptBody.slice(2), 'hex').toString('utf8');
@@ -130,7 +149,11 @@ function imageDigestCheck(receipt: Receipt, registered: string | undefined): Che
     if (registered === undefined || registered.length === 0) {
         return skip(label, 'the TeeRegistry reports no expected image digest');
     }
-    return verdict(label, receipt.teeImageDigest === registered, `receipt=${receipt.teeImageDigest}`);
+    return verdict(
+        label,
+        receipt.teeImageDigest === registered,
+        `receipt=${receipt.teeImageDigest}`,
+    );
 }
 
 /** Re-derive the recorded ground truth using the same rule the contract applies. */
@@ -146,33 +169,59 @@ function normalizeRecorded(receipt: Receipt): bigint | undefined {
     }
 }
 
+/**
+ * Why a signed value might not be available to compare against.
+ *
+ * On the FCC path every signed value lives inside one abi-encoded blob. If this build cannot
+ * decode that blob, `signedGroundTruthValue` and `signedEntries` are PLACEHOLDERS — and comparing
+ * a real receipt against a placeholder produces a confident, wrong FAILURE on a settlement that
+ * is perfectly sound. Skipping is the only honest answer.
+ */
+const BLOB_UNAVAILABLE =
+    'settled through the Flare Confidential Compute path and the attested result blob did not ' +
+    'decode against this build, so there is no signed value to compare — re-check with a build ' +
+    'whose TeeJobScore / TeeCompetitionSettlement layout matches the deployed contract';
+
 function groundTruthChecks(
     receipt: Receipt,
     signedGroundTruthValue: bigint,
     refetched: { readonly rawValue: string; readonly normalized: bigint } | undefined,
+    signedValuesAvailable: boolean,
 ): Check[] {
     const recordedLabel = "signed ground truth matches the receipt's recorded value";
     const recorded = normalizeRecorded(receipt);
     const checks: Check[] = [
-        recorded === undefined
-            ? skip(recordedLabel, `unsupported ground-truth kind "${receipt.groundTruth.kind}"`)
-            : verdict(
-                  recordedLabel,
-                  recorded === signedGroundTruthValue,
-                  `signed=${signedGroundTruthValue} receipt=${recorded}`,
-              ),
+        !signedValuesAvailable
+            ? skip(recordedLabel, BLOB_UNAVAILABLE)
+            : recorded === undefined
+              ? skip(recordedLabel, `unsupported ground-truth kind "${receipt.groundTruth.kind}"`)
+              : verdict(
+                    recordedLabel,
+                    recorded === signedGroundTruthValue,
+                    `signed=${signedGroundTruthValue} receipt=${recorded}`,
+                ),
     ];
 
+    // The re-fetch compares the oracle against BOTH the receipt and the signed value, so it is
+    // only partly blocked. Rather than skip it wholesale, drop to comparing the oracle against
+    // the receipt — still a genuine re-derivation, and it says which half it did.
     const refetchLabel = 'ground truth re-fetched from the DA layer matches';
     checks.push(
         refetched === undefined
             ? skip(refetchLabel, 'no DA layer URL configured')
-            : verdict(
-                  refetchLabel,
-                  refetched.rawValue === receipt.groundTruth.value &&
-                      refetched.normalized === signedGroundTruthValue,
-                  `oracle=${refetched.rawValue}`,
-              ),
+            : !signedValuesAvailable
+              ? verdict(
+                    refetchLabel,
+                    refetched.rawValue === receipt.groundTruth.value,
+                    `oracle=${refetched.rawValue} (compared against the receipt only; the signed ` +
+                        'value is inside an undecodable FCC blob)',
+                )
+              : verdict(
+                    refetchLabel,
+                    refetched.rawValue === receipt.groundTruth.value &&
+                        refetched.normalized === signedGroundTruthValue,
+                    `oracle=${refetched.rawValue}`,
+                ),
     );
     return checks;
 }
@@ -249,6 +298,16 @@ export interface CompetitionVerifyInput {
     readonly refetchedGroundTruth?:
         | { readonly rawValue: string; readonly normalized: bigint }
         | undefined;
+    /**
+     * FCC path only: whether `signedGroundTruthValue` and `signedEntries` are real or placeholders.
+     * Defaults to true, which is correct for the EIP-712 path, where they always come from named
+     * calldata arguments. See `BLOB_UNAVAILABLE`.
+     */
+    readonly signedValuesAvailable?: boolean | undefined;
+    /**
+     * FCC path only: the receipt hash carried INSIDE the attested blob. See `blobReceiptCheck`.
+     */
+    readonly blobReceiptHash?: Hex | undefined;
 }
 
 /**
@@ -283,10 +342,20 @@ export async function verifyCompetition(input: CompetitionVerifyInput): Promise<
                   }),
               );
     checks.push(signerCheck(path, signer, input.registeredTee));
+    // Only present on the FCC path; on the EIP-712 path the signature already covers this.
+    const blobReceipt = blobReceiptCheck(path, input.blobReceiptHash, input.anchoredReceiptHash);
+    if (blobReceipt) checks.push(blobReceipt);
+
+    const signedValuesAvailable = input.signedValuesAvailable ?? true;
 
     checks.push(imageDigestCheck(receipt, input.registeredImageDigest));
     checks.push(
-        ...groundTruthChecks(receipt, input.signedGroundTruthValue, input.refetchedGroundTruth),
+        ...groundTruthChecks(
+            receipt,
+            input.signedGroundTruthValue,
+            input.refetchedGroundTruth,
+            signedValuesAvailable,
+        ),
     );
 
     // Every revealed submission must match the ciphertext committed on chain BEFORE resolution.
@@ -309,22 +378,35 @@ export async function verifyCompetition(input: CompetitionVerifyInput): Promise<
     // The signed entry set and the receipt entry set must be the SAME set. The reference only
     // walked the receipt, so an extra entry present in the signature but absent from the receipt
     // would be paid out while never appearing in the audit artifact.
-    const receiptAgents = new Set(receipt.entries.map((e) => e.agent.toLowerCase()));
-    const signedAgents = new Set(input.signedEntries.map((e) => e.agent.toLowerCase()));
-    const sameSet =
-        receiptAgents.size === signedAgents.size &&
-        receiptAgents.size === receipt.entries.length &&
-        [...signedAgents].every((a) => receiptAgents.has(a));
-    checks.push(
-        verdict(
-            'every paid entry appears in the receipt (no extras, no duplicates)',
-            sameSet,
-            `receipt=${receiptAgents.size} signed=${signedAgents.size}`,
-        ),
-    );
+    const paidSetLabel = 'every paid entry appears in the receipt (no extras, no duplicates)';
+    if (!signedValuesAvailable) {
+        // `signedEntries` is an empty placeholder here, which would read as "the settlement paid
+        // nobody" and fail every time.
+        checks.push(skip(paidSetLabel, BLOB_UNAVAILABLE));
+    } else {
+        const receiptAgents = new Set(receipt.entries.map((e) => e.agent.toLowerCase()));
+        const signedAgents = new Set(input.signedEntries.map((e) => e.agent.toLowerCase()));
+        const sameSet =
+            receiptAgents.size === signedAgents.size &&
+            receiptAgents.size === receipt.entries.length &&
+            [...signedAgents].every((a) => receiptAgents.has(a));
+        checks.push(
+            verdict(
+                paidSetLabel,
+                sameSet,
+                `receipt=${receiptAgents.size} signed=${signedAgents.size}`,
+            ),
+        );
+    }
 
     // The settled scores must equal a replay of the pure scorer over the revealed submissions.
     const replayLabel = 'replayed scores reproduce the settled scores';
+    if (!signedValuesAvailable) {
+        // The replay needs both the signed ground truth (the scorer's input) and the signed
+        // scores (what it is checked against). Neither survived an undecodable blob.
+        checks.push(skip(replayLabel, BLOB_UNAVAILABLE));
+        return checks;
+    }
     const blocked = unreplayable(replayLabel, receipt.evaluatorId);
     if (blocked) {
         // Even when the score itself cannot be recomputed, the signed value and the receipt must
@@ -399,6 +481,13 @@ export interface JobVerifyInput {
      * Without it the score cannot be replayed, by design: a paid result stays private forever.
      */
     readonly revealed?: Record<string, string> | undefined;
+    /**
+     * FCC path only: whether `signedGroundTruthValue` and `signedScore` are real or placeholders.
+     * Defaults to true, correct for the EIP-712 path. See `BLOB_UNAVAILABLE`.
+     */
+    readonly signedValuesAvailable?: boolean | undefined;
+    /** FCC path only: the receipt hash carried INSIDE the attested blob. See `blobReceiptCheck`. */
+    readonly blobReceiptHash?: Hex | undefined;
 }
 
 /**
@@ -436,10 +525,20 @@ export async function verifyJob(input: JobVerifyInput): Promise<Check[]> {
                   }),
               );
     checks.push(signerCheck(path, signer, input.registeredTee));
+    // Only present on the FCC path; on the EIP-712 path the signature already covers this.
+    const blobReceipt = blobReceiptCheck(path, input.blobReceiptHash, input.anchoredReceiptHash);
+    if (blobReceipt) checks.push(blobReceipt);
+
+    const signedValuesAvailable = input.signedValuesAvailable ?? true;
 
     checks.push(imageDigestCheck(receipt, input.registeredImageDigest));
     checks.push(
-        ...groundTruthChecks(receipt, input.signedGroundTruthValue, input.refetchedGroundTruth),
+        ...groundTruthChecks(
+            receipt,
+            input.signedGroundTruthValue,
+            input.refetchedGroundTruth,
+            signedValuesAvailable,
+        ),
     );
 
     const entry = receipt.entries[0];
@@ -467,7 +566,11 @@ export async function verifyJob(input: JobVerifyInput): Promise<Check[]> {
 
     const replayLabel = 'replayed score reproduces the settled score';
     const blocked = unreplayable(replayLabel, receipt.evaluatorId);
-    if (blocked) {
+    if (!signedValuesAvailable) {
+        // The scorer's input (the signed ground truth) is a placeholder, so a replay would score
+        // against zero and disagree with a correct settlement.
+        checks.push(skip(replayLabel, BLOB_UNAVAILABLE));
+    } else if (blocked) {
         checks.push(blocked);
     } else if (input.revealed) {
         const r = replayability(receipt.evaluatorId);
@@ -506,8 +609,9 @@ export function allPassed(checks: readonly Check[]): boolean {
 }
 
 export function countBy(checks: readonly Check[]): Record<CheckStatus, number> {
-    return checks.reduce(
-        (acc, c) => ({ ...acc, [c.status]: acc[c.status] + 1 }),
-        { pass: 0, fail: 0, skipped: 0 },
-    );
+    return checks.reduce((acc, c) => ({ ...acc, [c.status]: acc[c.status] + 1 }), {
+        pass: 0,
+        fail: 0,
+        skipped: 0,
+    });
 }
