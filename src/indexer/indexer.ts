@@ -22,6 +22,7 @@ import { loadConfig, explainMissing } from '../config.js';
 import { makeClient } from '../chain/client.js';
 import { IndexDb } from './db.js';
 import { findEarliestDeployBlock } from './deployBlock.js';
+import { preflight, reportPreflight } from './preflight.js';
 import { routeLogs, type RouteStats } from './router.js';
 import { startTailer, type TailerCursor } from './tailer.js';
 
@@ -83,6 +84,27 @@ export async function main(): Promise<void> {
 
     log(`chain ${cfg.chainId} at ${cfg.rpcUrl}`);
     log(`index ${cfg.indexerDbPath} (${db.agentCount()} agents, ${db.jobCount()} jobs)`);
+
+    // Before a single log is read: does this build agree with the deployment about what the
+    // numbers MEAN? A mismatch here is not a crash later, it is an index full of confident wrong
+    // answers, so it is worth one round trip and a refusal.
+    const checks = await preflight(client, {
+        jobEscrow: cfg.jobEscrow,
+        sealedCompetition: cfg.sealedCompetition,
+    });
+    const proceed = reportPreflight(checks, {
+        warn: (line) => log(`WARNING: ${line}`),
+        error: (line) => console.error(`[indexer] FATAL: ${line}`),
+    });
+    if (!proceed) {
+        db.close();
+        process.exitCode = 1;
+        return;
+    }
+    log(
+        `voting epoch: round 0 at ${checks.votingEpoch.firstVotingRoundUnix}, ` +
+            `${checks.votingEpoch.epochSecs}s per round`,
+    );
 
     const fromBlock = await resolveFloor(cfg.fromBlock, db, client, addresses);
     const behind = Number(head) - (start?.blockNumber ?? Number(fromBlock));

@@ -200,6 +200,7 @@ function routeOne(
                 agent: String(a['agent'] ?? ''),
                 earned: (a['agentAmount'] as bigint) ?? 0n,
                 fee: (a['fee'] as bigint) ?? 0n,
+                atMs: entry.atMs,
             });
             note();
             return 'applied';
@@ -208,7 +209,7 @@ function routeOne(
         case 'JobNotDelivered': {
             const jobId = String(a['jobId']);
             const agent = String(a['agent'] ?? '');
-            db.applyRefunded({ jobId, agent, user: String(a['user'] ?? '') });
+            db.applyRefunded({ jobId, agent, user: String(a['user'] ?? ''), atMs: entry.atMs });
             // The chain records THAT a job refunded, never why. Capture the one reason it does
             // imply, so a buyer sees something better than an unexplained reversal.
             db.addFailure({

@@ -21,6 +21,7 @@ import { IndexDb } from './indexer/db.js';
 import { routeLogs } from './indexer/router.js';
 import { startTailer, type TailerHandle } from './indexer/tailer.js';
 import { findEarliestDeployBlock } from './indexer/deployBlock.js';
+import { preflight, reportPreflight } from './indexer/preflight.js';
 import { makeEventBus } from './server/events.js';
 
 export async function main(): Promise<void> {
@@ -42,6 +43,22 @@ export async function main(): Promise<void> {
     let tailer: TailerHandle | undefined;
 
     if (runsIndexer) {
+        // Same refusal as the standalone indexer, for the same reason: this process WRITES the
+        // index, and one built against a deployment whose constants disagree with this build is
+        // wrong in a way no later check catches. A gateway that only served reads would skip this.
+        const checks = await preflight(client, {
+            jobEscrow: cfg.jobEscrow,
+            sealedCompetition: cfg.sealedCompetition,
+        });
+        const proceed = reportPreflight(checks, {
+            warn: (line) => app.log.warn(line),
+            error: (line) => app.log.error(line),
+        });
+        if (!proceed) {
+            process.exitCode = 1;
+            return;
+        }
+
         db = new IndexDb(cfg.indexerDbPath);
         const targets = {
             jobEscrow: cfg.jobEscrow,

@@ -12,6 +12,7 @@ export default defineConfig({
         verify: 'src/verify/index.ts',
         deployments: 'src/deployments.ts',
         fcc: 'src/fcc/codec.ts',
+        votingEpoch: 'src/votingEpoch.ts',
     },
     format: ['esm'],
     dts: true,

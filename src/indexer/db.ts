@@ -13,7 +13,14 @@
 import { existsSync } from 'node:fs';
 import Database from 'better-sqlite3';
 
-import { SCHEMA, SCHEMA_VERSION, OVERALL_X100, PRIOR_MEAN, SCORE_CONFIDENCE } from './schema.js';
+import {
+    SCHEMA,
+    SCHEMA_VERSION,
+    MIGRATIONS,
+    OVERALL_X100,
+    PRIOR_MEAN,
+    SCORE_CONFIDENCE,
+} from './schema.js';
 import type {
     AgentRow,
     AgentDetail,
@@ -76,6 +83,11 @@ interface DbJob {
     delivery_deadline: number;
     lifetime_end: number;
     paid_at_ms: number;
+    /**
+     * When the escrow closed. Read by `activitySeries` only, and deliberately NOT carried into
+     * `JobRow` — the HTTP shape is `web`'s contract and nothing there asks for it yet.
+     */
+    released_at_ms: number;
     block_number: number;
 }
 
@@ -212,12 +224,34 @@ export class IndexDb {
             this.#db.pragma('journal_mode = WAL');
             this.#db.pragma('synchronous = NORMAL');
             this.#db.exec(SCHEMA);
+            // Before the stamp, never after: the stamp is unconditional, so a database that says
+            // v3 while missing a v3 column would pass the version check and then throw on the
+            // first SELECT that names it.
+            this.#migrate();
             this.setMeta('schema_version', String(SCHEMA_VERSION));
         }
     }
 
     close(): void {
         this.#db.close();
+    }
+
+    /**
+     * Add any column `SCHEMA` cannot add to a table that already exists.
+     *
+     * `CREATE TABLE IF NOT EXISTS` does nothing to a table that is already there, so every column
+     * added after v1 has to arrive this way. `PRAGMA table_info` is what makes it idempotent —
+     * SQLite has no `ADD COLUMN IF NOT EXISTS`, and re-adding one is an error, not a no-op.
+     */
+    #migrate(): void {
+        for (const m of MIGRATIONS) {
+            const cols = this.#db.prepare(`PRAGMA table_info(${m.table})`).all() as {
+                name: string;
+            }[];
+            if (cols.length === 0) continue; // the table itself is gone; SCHEMA owns that case
+            if (cols.some((c) => c.name === m.column)) continue;
+            this.#db.exec(`ALTER TABLE ${m.table} ADD COLUMN ${m.column} ${m.ddl}`);
+        }
     }
 
     /**
@@ -430,11 +464,18 @@ export class IndexDb {
         });
     }
 
-    applyReleased(j: { jobId: string; agent: string; earned: bigint; fee: bigint }): void {
+    applyReleased(j: {
+        jobId: string;
+        agent: string;
+        earned: bigint;
+        fee: bigint;
+        atMs: number;
+    }): void {
         this.#upsertJob(j.jobId, lower(j.agent), {
             released: 1,
             earned: j.earned.toString(),
             fee: j.fee.toString(),
+            released_at_ms: j.atMs,
             status: 'released',
         });
     }
@@ -446,12 +487,17 @@ export class IndexDb {
      * Passport — its own comment calls that "this job's final word on reputation". An index that
      * left `scored` false would disagree with the contract and would keep offering the job to a
      * keeper as still-scorable.
+     *
+     * `released_at_ms` is written here too, uniformly meaning "the block that closed this escrow".
+     * A refund is not settled work and must never reach the activity chart — that is what the
+     * `delivered = 1` filter in `activitySeries` is for, not an unwritten column.
      */
-    applyRefunded(j: { jobId: string; agent: string; user: string }): void {
+    applyRefunded(j: { jobId: string; agent: string; user: string; atMs: number }): void {
         this.#upsertJob(j.jobId, lower(j.agent), {
             released: 1,
             scored: 1,
             score: 0,
+            released_at_ms: j.atMs,
             status: 'refunded',
         });
         this.#db
@@ -917,10 +963,20 @@ export class IndexDb {
             // `released` alone would count REFUNDS as settled work: a refund also sets released,
             // so a job nobody delivered — where the buyer got their money back — would appear in
             // the activity chart as a completed job. Delivered AND released is the real thing.
+            //
+            // Bucketed on `released_at_ms`, not `paid_at_ms`. The series is "jobs SETTLED per day":
+            // a job paid on Monday and settled on Friday belongs to Friday, and a job paid before
+            // the window but settled inside it belongs in the chart at all — the old `paid_at_ms >=
+            // @start` bound dropped it entirely.
+            //
+            // Rows written before schema v3 carry 0 here and are skipped by the bucketer, so old
+            // settlements are missing from the chart until the index is rebuilt. A redeploy forces
+            // a rebuild anyway; on a database that was only ALTERed, expect a short flat head.
             .prepare(
-                `SELECT paid_at_ms FROM jobs WHERE released = 1 AND delivered = 1 AND paid_at_ms >= @start`,
+                `SELECT released_at_ms FROM jobs
+                  WHERE released = 1 AND delivered = 1 AND released_at_ms >= @start`,
             )
-            .all({ start }) as { paid_at_ms: number }[];
+            .all({ start }) as { released_at_ms: number }[];
         const agentRows = this.#db.prepare(`SELECT created_at FROM agents`).all() as {
             created_at: number;
         }[];
@@ -939,7 +995,7 @@ export class IndexDb {
             return m;
         };
 
-        const jobsByDay = bucket(jobRows, 'paid_at_ms');
+        const jobsByDay = bucket(jobRows, 'released_at_ms');
         const scoresByDay = bucket(scoreRows, 'at');
         const newByDay = new Map<number, number>();
         let totalBefore = 0;

@@ -24,7 +24,9 @@ import type { Hex } from 'viem';
 import {
     normalizeToPrice,
     type FeedDataWithProof,
-    votingRoundIdForTimestamp,
+    votingRoundIdForTimestampIn,
+    FALLBACK_VOTING_EPOCH,
+    type VotingEpoch,
     FEED_IDS,
     feedFor,
     type FeedSymbol,
@@ -35,11 +37,15 @@ export {
     normalizeToPrice,
     votingRoundIdForTimestamp,
     votingRoundStartUnix,
+    votingRoundIdForTimestampIn,
+    votingRoundStartUnixIn,
     cryptoFeedId,
     FEED_IDS,
     PRICE_DECIMALS,
     FIRST_VOTING_ROUND_UNIX,
     VOTING_EPOCH_SECS,
+    FALLBACK_VOTING_EPOCH,
+    type VotingEpoch,
     feedFor,
     isFeedSymbol,
     type FeedSymbol,
@@ -187,6 +193,12 @@ export interface ResolveConfig {
     readonly defaultLifetimeSecs: number;
     readonly apiKey?: string | undefined;
     readonly fetchImpl?: FetchLike | undefined;
+    /**
+     * The voting-epoch geometry, resolved from `FlareSystemsManager` at boot. Omitted falls back to
+     * the compiled-in Coston2 values — which is what every caller did before this existed, and what
+     * a caller with no chain client (the verifier's offline paths) still does.
+     */
+    readonly votingEpoch?: VotingEpoch | undefined;
 }
 
 /**
@@ -214,13 +226,14 @@ export async function resolveInputs(
         apiKey: config.apiKey,
         fetchImpl: config.fetchImpl,
     };
+    const epoch = config.votingEpoch ?? FALLBACK_VOTING_EPOCH;
     const end = await fetchGroundTruth({
         ...common,
-        votingRoundId: votingRoundIdForTimestamp(resolveAtSecs),
+        votingRoundId: votingRoundIdForTimestampIn(epoch, resolveAtSecs),
     });
     const start = await fetchGroundTruth({
         ...common,
-        votingRoundId: votingRoundIdForTimestamp(resolveAtSecs - lifetimeSecs),
+        votingRoundId: votingRoundIdForTimestampIn(epoch, resolveAtSecs - lifetimeSecs),
     });
     return { end, startValue: start.value, lifetimeSecs };
 }

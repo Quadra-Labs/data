@@ -23,7 +23,22 @@
  * checks it and refuses rather than failing at the first SELECT, which is what the Sui version did
  * when it met a database created before its newest column.
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
+
+/**
+ * Columns added after a table shipped, applied one by one to a database that already exists.
+ *
+ * `SCHEMA` above is all `CREATE TABLE IF NOT EXISTS`, so on an existing file it is a NO-OP — a new
+ * column in an existing table is never created, while the version stamp is written unconditionally.
+ * The database would then claim to be v3 and throw at the first SELECT naming the missing column.
+ *
+ * SQLite has no `ADD COLUMN IF NOT EXISTS`, so the applier reads `PRAGMA table_info` and skips what
+ * is already there, which makes this idempotent and safe to run on a fresh file too.
+ */
+export const MIGRATIONS: readonly { table: string; column: string; ddl: string }[] = [
+    // v3: bucket the activity chart on when a job SETTLED, not when it was paid for.
+    { table: 'jobs', column: 'released_at_ms', ddl: 'INTEGER NOT NULL DEFAULT 0' },
+];
 
 export const SCHEMA = `
 -- Agent identity. Flare has no on-chain agent registry, so name/description/owner come from a
@@ -89,6 +104,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     delivery_deadline INTEGER NOT NULL DEFAULT 0,
     lifetime_end INTEGER NOT NULL DEFAULT 0,
     paid_at_ms INTEGER NOT NULL DEFAULT 0,
+    -- When the escrow CLOSED, in either direction. paid_at_ms is when the buyer hired the agent,
+    -- which can be days earlier -- activitySeries buckets on THIS one.
+    released_at_ms INTEGER NOT NULL DEFAULT 0,
     block_number INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_agent ON jobs(agent);

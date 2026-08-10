@@ -27,6 +27,10 @@
         "./fcc": {
             "types": "./dist/fcc.d.ts",
             "import": "./dist/fcc.js"
+        },
+        "./voting-epoch": {
+            "types": "./dist/votingEpoch.d.ts",
+            "import": "./dist/votingEpoch.js"
         }
     },
     "files": [

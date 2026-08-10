@@ -12,9 +12,31 @@
 
 import { stringToHex, pad, type Hex } from 'viem';
 
-/** Anchor feeds finalize every 90 seconds; voting round 0 began at this unix time. */
+/**
+ * The voting-epoch geometry: anchor feeds finalize every 90 seconds, and round 0 began here.
+ *
+ * These are the **Coston2-confirmed fallback**, not an authority. Flare's own docs publish
+ * `1658429955` for a sibling network, and `FlareSystemsManager` is where the real values live —
+ * `resolveVotingEpoch` in `quadra-core/voting-epoch` reads them and warns loudly on divergence.
+ *
+ * Getting this wrong is the quiet kind of wrong: `votingRoundIdForTimestamp` returns a plausible
+ * round, the DA layer answers with a real finalized feed, the Merkle proof verifies on chain, and
+ * the settlement is scored against the wrong INSTANT. Nothing reports an error anywhere.
+ */
 export const FIRST_VOTING_ROUND_UNIX = 1_658_430_000;
 export const VOTING_EPOCH_SECS = 90;
+
+/** The two numbers that place a timestamp in a voting round. */
+export interface VotingEpoch {
+    readonly firstVotingRoundUnix: number;
+    readonly epochSecs: number;
+}
+
+/** The compiled-in geometry, as a value the parameterized functions below can take. */
+export const FALLBACK_VOTING_EPOCH: VotingEpoch = {
+    firstVotingRoundUnix: FIRST_VOTING_ROUND_UNIX,
+    epochSecs: VOTING_EPOCH_SECS,
+};
 
 /** The app's canonical price precision (1e-8 fixed point). MUST match `FtsoLib.PRICE_DECIMALS`. */
 export const PRICE_DECIMALS = 8;
@@ -22,14 +44,29 @@ export const PRICE_DECIMALS = 8;
 /** The widest raw reading the on-chain `FeedData.value` (an int32) can carry. */
 export const MAX_INT32 = 2_147_483_647;
 
-/** The voting round whose finalized value resolves a target time. */
+/** The voting round whose finalized value resolves a target time, under a given epoch geometry. */
+export function votingRoundIdForTimestampIn(epoch: VotingEpoch, unixSeconds: number): number {
+    return Math.floor((unixSeconds - epoch.firstVotingRoundUnix) / epoch.epochSecs);
+}
+
+/** The unix second a voting round opened, under a given epoch geometry. */
+export function votingRoundStartUnixIn(epoch: VotingEpoch, votingRoundId: number): number {
+    return epoch.firstVotingRoundUnix + votingRoundId * epoch.epochSecs;
+}
+
+/**
+ * The voting round whose finalized value resolves a target time.
+ *
+ * Zero-config form, using the compiled-in fallback. Every existing caller keeps working; a caller
+ * that has resolved the real geometry from chain passes it to the `...In` form above instead.
+ */
 export function votingRoundIdForTimestamp(unixSeconds: number): number {
-    return Math.floor((unixSeconds - FIRST_VOTING_ROUND_UNIX) / VOTING_EPOCH_SECS);
+    return votingRoundIdForTimestampIn(FALLBACK_VOTING_EPOCH, unixSeconds);
 }
 
 /** The unix second a voting round opened. The inverse of the above, for human-readable output. */
 export function votingRoundStartUnix(votingRoundId: number): number {
-    return FIRST_VOTING_ROUND_UNIX + votingRoundId * VOTING_EPOCH_SECS;
+    return votingRoundStartUnixIn(FALLBACK_VOTING_EPOCH, votingRoundId);
 }
 
 /**
