@@ -23,7 +23,7 @@
  * checks it and refuses rather than failing at the first SELECT, which is what the Sui version did
  * when it met a database created before its newest column.
  */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /**
  * Columns added after a table shipped, applied one by one to a database that already exists.
@@ -38,6 +38,11 @@ export const SCHEMA_VERSION = 3;
 export const MIGRATIONS: readonly { table: string; column: string; ddl: string }[] = [
     // v3: bucket the activity chart on when a job SETTLED, not when it was paid for.
     { table: 'jobs', column: 'released_at_ms', ddl: 'INTEGER NOT NULL DEFAULT 0' },
+    // v4: a competition carries its own scope and scored window (plan/09 feature 44). The DEFAULTs
+    // are what an already-indexed competition gets, and they are honest: it was created before the
+    // contract had these fields, so it genuinely has no scope and no window of its own.
+    { table: 'competitions', column: 'params', ddl: "TEXT NOT NULL DEFAULT '0x'" },
+    { table: 'competitions', column: 'lifetime_secs', ddl: 'INTEGER NOT NULL DEFAULT 0' },
 ];
 
 export const SCHEMA = `
@@ -132,7 +137,14 @@ CREATE TABLE IF NOT EXISTS competitions (
     cancelled INTEGER NOT NULL DEFAULT 0,
     creator TEXT NOT NULL DEFAULT '',
     receipt_hash TEXT NOT NULL DEFAULT '',
-    created_block INTEGER NOT NULL DEFAULT 0
+    created_block INTEGER NOT NULL DEFAULT 0,
+    -- The competition's own scope and scored window, added in v4 (plan/09 feature 44). params is
+    -- the raw JSON-in-hex blob from the event, stored verbatim rather than parsed into an asset
+    -- column: a competition may later carry scope this indexer has no column for, and re-deriving
+    -- from the blob costs nothing while a lossy parse cannot be undone.
+    -- (No backticks in this block: SCHEMA is a template literal.)
+    params TEXT NOT NULL DEFAULT '0x',
+    lifetime_secs INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_competitions_resolve ON competitions(resolve_at);
 CREATE INDEX IF NOT EXISTS idx_competitions_block ON competitions(created_block);

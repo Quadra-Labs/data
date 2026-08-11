@@ -138,6 +138,22 @@ export interface CompetitionRow {
     /** The anchored receipt hash, from Settled. Empty until the competition settles. */
     receiptHash: string;
     createdBlock: number;
+    /**
+     * The competition's scope, as the raw JSON-in-hex blob the event carried — the same convention
+     * a job's params use, so `jobAsset()` reads either. `'0x'` means no scope was declared.
+     *
+     * Kept raw rather than split into an `asset` column: what a competition may declare will grow,
+     * and a lossy parse at index time cannot be undone, while re-deriving from the blob is free.
+     */
+    params: string;
+    /**
+     * The window the entries are SCORED over, ending at `resolveAt`. NOT `resolveAt - createdAt`:
+     * a competition opened six hours ahead may be graded on its last hour only.
+     *
+     * `0` on rows indexed before the contract carried this field, which is honest — those really
+     * were scored over whatever the engine's configuration said at the time.
+     */
+    lifetimeSecs: number;
     entrants: number;
 }
 

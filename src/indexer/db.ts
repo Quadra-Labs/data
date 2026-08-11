@@ -153,6 +153,8 @@ interface DbCompetition {
     creator: string;
     receipt_hash: string;
     created_block: number;
+    params: string;
+    lifetime_secs: number;
     entrants: number;
 }
 
@@ -174,6 +176,8 @@ function toCompetitionRow(r: DbCompetition): CompetitionRow {
 
         receiptHash: r.receipt_hash,
         createdBlock: r.created_block,
+        params: r.params,
+        lifetimeSecs: r.lifetime_secs,
         entrants: r.entrants,
     };
 }
@@ -546,18 +550,23 @@ export class IndexDb {
         resolveAt: number;
         creator: string;
         createdBlock: number;
+        params: string;
+        lifetimeSecs: number;
     }): void {
         this.#db
             .prepare(
                 `INSERT INTO competitions (competition_id, evaluator_id, category, kind, stake,
-                                           seed_prize, prize_pool, threshold, resolve_at, creator, created_block)
+                                           seed_prize, prize_pool, threshold, resolve_at, creator, created_block,
+                                           params, lifetime_secs)
                  VALUES (@competitionId, @evaluatorId, @category, @kind, @stake,
-                         @seedPrize, @seedPrize, @threshold, @resolveAt, @creator, @createdBlock)
+                         @seedPrize, @seedPrize, @threshold, @resolveAt, @creator, @createdBlock,
+                         @params, @lifetimeSecs)
                  ON CONFLICT(competition_id) DO UPDATE SET
                      evaluator_id = excluded.evaluator_id, category = excluded.category,
                      kind = excluded.kind, stake = excluded.stake, seed_prize = excluded.seed_prize,
                      threshold = excluded.threshold, resolve_at = excluded.resolve_at,
-                     creator = excluded.creator, created_block = excluded.created_block`,
+                     creator = excluded.creator, created_block = excluded.created_block,
+                     params = excluded.params, lifetime_secs = excluded.lifetime_secs`,
             )
             .run({
                 ...c,

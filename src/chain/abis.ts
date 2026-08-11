@@ -42,8 +42,11 @@ export const jobEscrowAbi = parseAbi([
 
 export const sealedCompetitionAbi = parseAbi([
     // reads. Note the auto-generated getter omits `splitPct` — Solidity struct getters skip
-    // dynamic arrays — which is why `getSplit` exists as a separate call.
-    'function competitions(bytes32) view returns (string evaluatorId, bytes32 category, uint8 kind, uint256 stake, uint256 seedPrize, uint256 stakedTotal, uint256 prizePool, uint64 resolveAt, uint64 threshold, bool exists, bool settled, bool cancelled, address creator)',
+    // dynamic arrays — which is why `getSplit` exists as a separate call. It does NOT skip `bytes`,
+    // so `params` is in the tuple; it sits after `creator` because both new fields were appended
+    // rather than placed beside the values they belong with, which keeps every pre-existing index
+    // pointing at the same field.
+    'function competitions(bytes32) view returns (string evaluatorId, bytes32 category, uint8 kind, uint256 stake, uint256 seedPrize, uint256 stakedTotal, uint256 prizePool, uint64 resolveAt, uint64 threshold, bool exists, bool settled, bool cancelled, address creator, uint32 lifetimeSecs, bytes params)',
     'function getSplit(bytes32 competitionId) view returns (uint16[])',
     'function submissions(bytes32, address) view returns (bytes32)',
     'function joined(bytes32, address) view returns (bool)',
@@ -54,7 +57,7 @@ export const sealedCompetitionAbi = parseAbi([
     'function KIND_PERFORMANCE() view returns (uint8)',
     'function PERF_BASE() view returns (uint64)',
     // events
-    'event CompetitionCreated(bytes32 indexed competitionId, string evaluatorId, uint8 kind, uint256 stake, uint256 seedPrize, uint64 resolveAt, uint64 threshold, address indexed creator)',
+    'event CompetitionCreated(bytes32 indexed competitionId, string evaluatorId, uint8 kind, uint256 stake, uint256 seedPrize, uint64 resolveAt, uint64 threshold, address indexed creator, uint32 lifetimeSecs, bytes params)',
     'event Joined(bytes32 indexed competitionId, address indexed agent, uint256 stake)',
     'event Submitted(bytes32 indexed competitionId, address indexed agent, bytes32 ciphertextHash)',
     'event PrizeAwarded(bytes32 indexed competitionId, address indexed agent, uint256 rank, uint256 amount)',

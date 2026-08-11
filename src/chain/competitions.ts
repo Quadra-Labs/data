@@ -57,6 +57,16 @@ export interface CompetitionView {
     readonly settled: boolean;
     readonly cancelled: boolean;
     readonly creator: Address;
+    /**
+     * The window entries are SCORED over, ending at `resolveAt` — not `resolveAt - createdAt`.
+     * `0` on a competition created before the contract carried the field.
+     */
+    readonly lifetimeSecs: number;
+    /**
+     * What the competition is about, as the raw JSON-in-hex blob it was created with — the same
+     * convention a paid job's params use, so `jobAsset()` reads either. `'0x'` means none declared.
+     */
+    readonly params: Hex;
     /** The winner split in percent, summing to 100. Length is the number of winner slots. */
     readonly splitPct: readonly number[];
     /**
@@ -176,6 +186,8 @@ export function makeCompetitionReader(
             settled,
             cancelled,
             creator,
+            lifetimeSecs,
+            params,
         ] = r;
 
         // `exists` is an explicit field rather than a sentinel. The Flare reference inferred
@@ -197,6 +209,8 @@ export function makeCompetitionReader(
             settled,
             cancelled,
             creator,
+            lifetimeSecs: Number(lifetimeSecs),
+            params,
             splitPct: [...splitPct],
         };
     }

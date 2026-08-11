@@ -285,6 +285,10 @@ function routeOne(
                 resolveAt: Number(a['resolveAt'] ?? 0n),
                 creator: String(a['creator'] ?? ''),
                 createdBlock: entry.blockNumber,
+                // Stored as the raw blob the event carried. `'0x'` is the legal empty value and
+                // means "no scope declared", which is not the same as a missing field.
+                params: String(a['params'] ?? '0x'),
+                lifetimeSecs: Number(a['lifetimeSecs'] ?? 0),
             });
             note();
             return 'applied';
