@@ -30,6 +30,16 @@
             "priceWei": "500000000000000000",
             "addressEnv": "SOL_AGENT",
             "scoreless": false
+        },
+        {
+            "slug": "btc-up-down",
+            "name": "BtcUpDownOracle",
+            "description": "Calls whether BTC/USD finishes the window higher than it started, with a confidence, delivered as a sealed submission only you can open.",
+            "evaluatorId": "up-down-guess",
+            "asset": "BTC",
+            "priceWei": "1000000000000000000",
+            "addressEnv": "UPDOWN_AGENT",
+            "scoreless": false
         }
     ]
 }
