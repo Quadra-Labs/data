@@ -54,7 +54,16 @@ export interface FetchedSettlement {
     /** Empty on the FCC path, where the signature is not EIP-712 typed data. */
     readonly signature: Hex;
     readonly settlementPath: SettlementPath;
-    readonly groundTruthValue: bigint;
+    /** JOB only: a paid job is measured against exactly one asset, so this stays scalar. */
+    readonly groundTruthValue?: bigint;
+    /**
+     * COMPETITION only: the parallel ground-truth arrays the settlement signed, index 0 being the
+     * primary. A single-asset competition carries length-1 arrays; a portfolio carries one entry
+     * per attested asset (BUGS.md 27). Empty only when an FCC blob failed to decode, which
+     * `blobDecoded: false` marks so the checks skip rather than fail.
+     */
+    readonly feedIds?: readonly Hex[];
+    readonly groundTruthValues?: readonly bigint[];
     /** Competition only: the per-agent ranking values the TEE signed. */
     readonly entries: readonly { readonly agent: Address; readonly score: bigint }[];
     /** Job only. */
@@ -309,12 +318,13 @@ export function makeVerifyFetcher(config: VerifyChainConfig): VerifyFetcher {
             };
 
             if (decoded.functionName === 'settle') {
-                const [, , groundTruthValue, entries, signature] = decoded.args;
+                const [, , feedIds, groundTruthValues, entries, signature] = decoded.args;
                 return {
                     ...common,
                     signature,
                     settlementPath: 'eip712',
-                    groundTruthValue,
+                    feedIds: [...feedIds],
+                    groundTruthValues: [...groundTruthValues],
                     entries: entries.map((e) => ({ agent: e.agent, score: e.score })),
                 };
             }
@@ -329,7 +339,8 @@ export function makeVerifyFetcher(config: VerifyChainConfig): VerifyFetcher {
                         ...common,
                         signature: '0x',
                         settlementPath: 'fcc',
-                        groundTruthValue: s.groundTruthValue,
+                        feedIds: [...s.feedIds],
+                        groundTruthValues: [...s.groundTruthValues],
                         entries: s.entries.map((e) => ({ agent: e.agent, score: e.score })),
                         blobDecoded: true,
                         blobReceiptHash: s.receiptHash,
@@ -339,7 +350,8 @@ export function makeVerifyFetcher(config: VerifyChainConfig): VerifyFetcher {
                         ...common,
                         signature: '0x',
                         settlementPath: 'fcc',
-                        groundTruthValue: 0n,
+                        feedIds: [],
+                        groundTruthValues: [],
                         entries: [],
                         blobDecoded: false,
                     };

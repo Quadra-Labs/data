@@ -56,6 +56,26 @@ const FEED_DATA_WITH_PROOF = {
     ],
 } as const;
 
+/** The same tuple as an ARRAY, for the competition settlement's per-asset proofs. */
+const FEED_DATA_WITH_PROOF_ARRAY = {
+    name: 'proofs',
+    type: 'tuple[]',
+    components: [
+        { name: 'proof', type: 'bytes32[]' },
+        {
+            name: 'body',
+            type: 'tuple',
+            components: [
+                { name: 'votingRoundId', type: 'uint32' },
+                { name: 'id', type: 'bytes21' },
+                { name: 'value', type: 'int32' },
+                { name: 'turnoutBPS', type: 'uint16' },
+                { name: 'decimals', type: 'int8' },
+            ],
+        },
+    ],
+} as const;
+
 export interface FeedData {
     readonly votingRoundId: number;
     readonly id: Hex;
@@ -126,7 +146,11 @@ const TEE_COMPETITION_SETTLEMENT = [
         components: [
             { name: 'competitionId', type: 'bytes32' },
             { name: 'receiptHash', type: 'bytes32' },
-            { name: 'groundTruthValue', type: 'uint256' },
+            // Parallel arrays, index-aligned with each other AND with `proofs`. A portfolio
+            // competition is scored against several assets; carrying one value left every leg but
+            // the first attested by the TEE signature alone.
+            { name: 'feedIds', type: 'bytes21[]' },
+            { name: 'groundTruthValues', type: 'uint256[]' },
             {
                 name: 'entries',
                 type: 'tuple[]',
@@ -137,7 +161,7 @@ const TEE_COMPETITION_SETTLEMENT = [
                 ],
             },
             { name: 'receipt', type: 'bytes' },
-            FEED_DATA_WITH_PROOF,
+            FEED_DATA_WITH_PROOF_ARRAY,
         ],
     },
 ] as const;
@@ -151,10 +175,12 @@ export interface TeeEntry {
 export interface TeeCompetitionSettlement {
     readonly competitionId: Hex;
     readonly receiptHash: Hex;
-    readonly groundTruthValue: bigint;
+    /** 21-byte FTSO feed ids, index-aligned with `groundTruthValues` and `proofs`. Never empty. */
+    readonly feedIds: readonly Hex[];
+    readonly groundTruthValues: readonly bigint[];
     readonly entries: readonly TeeEntry[];
     readonly receipt: Hex;
-    readonly proof: FeedDataWithProof;
+    readonly proofs: readonly FeedDataWithProof[];
 }
 
 // --- decode -------------------------------------------------------------------------------------

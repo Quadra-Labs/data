@@ -35,12 +35,19 @@ export function competitionDomain(chainId: number, verifyingContract: Address): 
 /**
  * The typed-data schema. `Entry` is one agent's final ranking value; `Settlement` is the whole
  * payout the TEE attests to, bound to the competition, to the receipt, and to the ground-truth
- * value it was scored against (echoed so the contract can cross-check it against FTSO).
+ * values it was scored against (echoed so the contract can cross-check them against FTSO).
  *
  * `score` is **uint64, not uint8**. The Flare reference used uint8 because it only had scoring
  * competitions. Ours also runs PERFORMANCE competitions, which rank on `PERF_BASE + roi_bps`
  * (around 1e6) and would silently truncate at uint8. Widening it later would have meant a new
  * typehash and a coordinated redeploy, so it was widened before the format was frozen.
+ *
+ * `feedIds` and `groundTruthValues` are PARALLEL ARRAYS, and the feed ids are inside the signature
+ * on purpose. A portfolio competition is scored against several assets; carrying one value meant
+ * the contract cross-checked one leg and took the rest on the TEE's word. Signing the feed id
+ * beside each value is what lets `FtsoLib.checkGroundTruths` reject a proof for an asset the TEE
+ * never named — without it a relayer could swap in a different feed's proof carrying the same
+ * number and every on-chain check would still pass.
  */
 export const competitionTypes = {
     Entry: [
@@ -50,7 +57,8 @@ export const competitionTypes = {
     Settlement: [
         { name: 'competitionId', type: 'bytes32' },
         { name: 'receiptHash', type: 'bytes32' },
-        { name: 'groundTruthValue', type: 'uint256' },
+        { name: 'feedIds', type: 'bytes21[]' },
+        { name: 'groundTruthValues', type: 'uint256[]' },
         { name: 'entries', type: 'Entry[]' },
     ],
 } as const;
@@ -64,7 +72,9 @@ export interface SettlementEntry {
 export interface Settlement {
     readonly competitionId: Hex;
     readonly receiptHash: Hex;
-    readonly groundTruthValue: bigint;
+    /** 21-byte FTSO feed ids, index-aligned with `groundTruthValues`. Never empty. */
+    readonly feedIds: readonly Hex[];
+    readonly groundTruthValues: readonly bigint[];
     readonly entries: readonly SettlementEntry[];
 }
 
@@ -81,7 +91,8 @@ export function settlementDigest(
         message: {
             competitionId: settlement.competitionId,
             receiptHash: settlement.receiptHash,
-            groundTruthValue: settlement.groundTruthValue,
+            feedIds: [...settlement.feedIds],
+            groundTruthValues: [...settlement.groundTruthValues],
             entries: settlement.entries.map((e) => ({ agent: e.agent, score: e.score })),
         },
     });
@@ -148,7 +159,8 @@ export function jobSettlementDigest(
  */
 export const ENTRY_TYPE_STRING = 'Entry(address agent,uint64 score)';
 export const SETTLEMENT_TYPE_STRING =
-    'Settlement(bytes32 competitionId,bytes32 receiptHash,uint256 groundTruthValue,Entry[] entries)' +
+    'Settlement(bytes32 competitionId,bytes32 receiptHash,bytes21[] feedIds,' +
+    'uint256[] groundTruthValues,Entry[] entries)' +
     ENTRY_TYPE_STRING;
 export const JOB_SETTLEMENT_TYPE_STRING =
     'JobSettlement(bytes32 jobId,bytes32 receiptHash,address agent,uint8 score,uint256 groundTruthValue)';
@@ -164,13 +176,25 @@ export const JOB_SETTLEMENT_TYPEHASH = keccak256(toHex(JOB_SETTLEMENT_TYPE_STRIN
  * Checked at import rather than in a test, because the failure this guards against is an edit to
  * a type string above, and an edit is exactly when the check must fire — including in a build
  * where the tests were not run.
+ *
+ * `Settlement` WAS UNFROZEN ONCE, deliberately, on 2026-08-11 (BUGS.md 27). It moved from a single
+ * `uint256 groundTruthValue` to the `bytes21[] feedIds` / `uint256[] groundTruthValues` pair so a
+ * portfolio competition can have every leg cross-checked on chain instead of one. The old value
+ * was `0x38d6bb5820f67e522ecb352cea5f9cd630ea0b30e270c72b2da2a4c78b2bb6f8`; it is recorded here
+ * because a signature produced against it will not verify against the new markets, and "why does
+ * this recover to a random address" is the question that value answers.
+ *
+ * This was safe to do exactly once, and only because nothing had settled through it yet on a
+ * deployment that survives: the change shipped WITH the redeploy that DEPLOYMENT-STATE Gap 4
+ * already forced. Doing it again after a real settlement means every past settlement stops
+ * verifying. `Entry` and `JobSettlement` did not move.
  */
 const FROZEN: ReadonlyArray<readonly [string, Hex, Hex]> = [
     ['Entry', ENTRY_TYPEHASH, '0x78fddf7e955aaa4c2a9ece10c67c52c9310b790f3ead56a2feaf7ad23b4a2ca5'],
     [
         'Settlement',
         SETTLEMENT_TYPEHASH,
-        '0x38d6bb5820f67e522ecb352cea5f9cd630ea0b30e270c72b2da2a4c78b2bb6f8',
+        '0x77b51011b97c64b7a8b841b839555bdc619c690ccd5c9b9719d72cb6e4765f9a',
     ],
     [
         'JobSettlement',

@@ -91,7 +91,10 @@ export async function verifyJobById(jobId: Hex, opts: VerifyOptions): Promise<Ch
         anchoredReceiptHash: settlement.anchoredReceiptHash,
         signature: settlement.signature,
         settlementPath: settlement.settlementPath,
-        signedGroundTruthValue: settlement.groundTruthValue,
+        // A paid job is measured against exactly one asset, so the scalar survives here. The `?? 0n`
+        // is only reachable on an FCC blob that failed to decode, which `signedValuesAvailable`
+        // below turns into a SKIP rather than a comparison against a placeholder.
+        signedGroundTruthValue: settlement.groundTruthValue ?? 0n,
         signedScore: settlement.score ?? 0,
         agent: settlement.agent ?? zeroAddress,
         registeredTee: tee.wallet,
@@ -135,7 +138,8 @@ export async function verifyCompetitionById(
         anchoredReceiptHash: settlement.anchoredReceiptHash,
         signature: settlement.signature,
         settlementPath: settlement.settlementPath,
-        signedGroundTruthValue: settlement.groundTruthValue,
+        signedFeedIds: settlement.feedIds ?? [],
+        signedGroundTruthValues: settlement.groundTruthValues ?? [],
         signedEntries: settlement.entries,
         registeredTee: tee.wallet,
         registeredImageDigest: tee.imageDigest,

@@ -40,6 +40,18 @@ export type GroundTruth =
       };
 
 /**
+ * One asset of a multi-asset settlement: the ground truth pinned for it, plus the opening price
+ * the scorer valued it from. `asset` is the readable symbol ("BTC"); `groundTruth.feedId` is the
+ * 21-byte id the signature and the Merkle proof actually agree on, and is the authoritative field.
+ */
+export interface PricedAsset {
+    readonly asset: string;
+    readonly groundTruth: GroundTruth;
+    /** Integer string in the feed's decimals, matching `Receipt.startValue`'s convention. */
+    readonly startValue: string;
+}
+
+/**
  * One entrant's revealed submission and score. `ciphertextHash` ties back to the on-chain
  * `submitSealed` (or `deliver`) commitment, so a verifier can confirm the revealed plaintext is
  * what was actually committed before the answer was known.
@@ -71,7 +83,24 @@ export interface Receipt {
      * TeeRegistry. A receipt is only trustworthy if this digest is the registered one.
      */
     readonly teeImageDigest: string;
+    /**
+     * The PRIMARY ground truth — the one whose value `startValue` pairs with and whose feed the
+     * scorer measured against. For a single-asset job or competition it is the only one.
+     */
     readonly groundTruth: GroundTruth;
+    /**
+     * Every asset this settlement pinned on chain, when there is more than one.
+     *
+     * OMITTED ENTIRELY for a single-asset settlement rather than written as a one-element array.
+     * `canonicalize` hashes whatever keys are present, so emitting this on a job receipt would
+     * change the canonical bytes — and therefore the receiptHash — of every settlement shape that
+     * does not need it. A portfolio competition is the only producer today.
+     *
+     * Index-aligned with the settlement's signed `feedIds` / `groundTruthValues`, so a verifier can
+     * confirm the receipt and the signature describe the same assets. `startValue` is per-asset
+     * here because a portfolio's ROI needs each leg's opening price, not just the primary's.
+     */
+    readonly groundTruths?: readonly PricedAsset[];
     /** Integer string in the feed's decimals; the tolerance scale the scorer used. */
     readonly startValue: string;
     /**
@@ -95,7 +124,15 @@ export function canonicalize(value: unknown): string {
     if (value === null || typeof value !== 'object') return JSON.stringify(value);
     if (Array.isArray(value)) return `[${value.map(canonicalize).join(',')}]`;
     const obj = value as Record<string, unknown>;
-    const keys = Object.keys(obj).sort();
+    // A key present with an `undefined` value is DROPPED, matching what `JSON.stringify` does for
+    // objects. This matters now that `Receipt.groundTruths` is optional: `{...r, groundTruths:
+    // undefined}` and omitting the key are the same intent, and without this line the first one
+    // serializes the literal text `undefined` into the hash preimage — invalid JSON that still
+    // hashes, so it would anchor on chain and only fail when a verifier tried to parse it back.
+    // No previously-valid receipt is affected, because such a receipt could never have parsed.
+    const keys = Object.keys(obj)
+        .filter((k) => obj[k] !== undefined)
+        .sort();
     return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalize(obj[k])}`).join(',')}}`;
 }
 

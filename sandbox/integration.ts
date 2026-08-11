@@ -292,6 +292,10 @@ async function stepVerify(): Promise<void> {
         agent: e.agent,
         score: BigInt(e.score),
     }));
+    // A single-asset competition signs length-1 arrays. The feed id is INSIDE the signature, so a
+    // proof for a different feed cannot be substituted on chain (BUGS.md 27).
+    const signedFeedIds = [FEED_IDS['BTC/USD']];
+    const signedGroundTruthValues = [endPrice];
     const sign = (signer: typeof tee) =>
         signer.signTypedData({
             domain: competitionDomain(chainId, market),
@@ -300,7 +304,8 @@ async function stepVerify(): Promise<void> {
             message: {
                 competitionId: receipt.competitionId,
                 receiptHash: anchored,
-                groundTruthValue: endPrice,
+                feedIds: signedFeedIds,
+                groundTruthValues: signedGroundTruthValues,
                 entries: signedEntries,
             },
         });
@@ -312,7 +317,8 @@ async function stepVerify(): Promise<void> {
     const base = {
         receiptBody: receiptBytes(receipt),
         anchoredReceiptHash: anchored,
-        signedGroundTruthValue: endPrice,
+        signedFeedIds,
+        signedGroundTruthValues,
         signedEntries,
         registeredTee: tee.address,
         registeredImageDigest: image,

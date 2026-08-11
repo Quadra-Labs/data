@@ -227,6 +227,120 @@ function groundTruthChecks(
 }
 
 /**
+ * The per-asset half of the ground-truth story (BUGS.md 27).
+ *
+ * `groundTruthChecks` above compares the PRIMARY leg. These compare the whole array, which is the
+ * only thing that makes a portfolio settlement's extra proofs worth carrying: without them a
+ * verifier confirms one asset and reports the settlement as fully re-derived, which is exactly the
+ * over-claim the single-proof design was criticised for.
+ *
+ * The feed-id comparison is the sharp one. A settlement's value can be right while its FEED is
+ * wrong — an ETH forecast scored against the BTC anchor still produces a real number from a real
+ * finalized round, and every other check here passes. `FtsoLib.checkGroundTruths` refuses that on
+ * chain by binding each proof to the signed feed id; this is the off-chain mirror of that refusal.
+ */
+function multiFeedChecks(
+    receipt: Receipt,
+    signedFeedIds: readonly Hex[],
+    signedValues: readonly bigint[],
+    signedValuesAvailable: boolean,
+): Check[] {
+    const pinnedLabel = 'the settlement pins a feed for every ground-truth value it signed';
+    if (!signedValuesAvailable) return [skip(pinnedLabel, BLOB_UNAVAILABLE)];
+
+    const checks: Check[] = [
+        verdict(
+            pinnedLabel,
+            signedFeedIds.length > 0 && signedFeedIds.length === signedValues.length,
+            `${signedFeedIds.length} feeds, ${signedValues.length} values`,
+        ),
+    ];
+
+    // The primary must be first, or the receipt's `groundTruth`/`startValue` describe one asset
+    // while the contract cross-checked another at that index.
+    const primaryLabel = "the primary signed feed is the one the receipt records";
+    const primaryFeed = signedFeedIds[0];
+    if (receipt.groundTruth.kind !== 'ftso-anchor') {
+        checks.push(skip(primaryLabel, `unsupported ground-truth kind "${receipt.groundTruth.kind}"`));
+    } else {
+        checks.push(
+            verdict(
+                primaryLabel,
+                primaryFeed !== undefined &&
+                    primaryFeed.toLowerCase() === receipt.groundTruth.feedId.toLowerCase(),
+                `signed=${primaryFeed} receipt=${receipt.groundTruth.feedId}`,
+            ),
+        );
+    }
+
+    // The full per-asset trail, when the receipt carries one. A single-asset settlement omits
+    // `groundTruths` entirely, and the primary check above is then the whole story — so this is
+    // skipped rather than failed.
+    const trailLabel = 'every signed (feed, value) pair matches the receipt';
+    const trail = receipt.groundTruths;
+    if (trail === undefined) {
+        checks.push(
+            signedFeedIds.length <= 1
+                ? skip(trailLabel, 'single-asset settlement; the primary check above covers it')
+                : // A multi-feed settlement whose receipt records only one asset is a real
+                  // finding: the chain verified assets the audit artifact never mentions.
+                  make(
+                      trailLabel,
+                      'fail',
+                      `${signedFeedIds.length} feeds were pinned on chain but the receipt records ` +
+                          'no per-asset ground truth to compare them against',
+                  ),
+        );
+        return checks;
+    }
+
+    let allMatch = trail.length === signedFeedIds.length;
+    const mismatches: string[] = [];
+    for (let i = 0; i < signedFeedIds.length; i++) {
+        const entry = trail[i];
+        const feed = signedFeedIds[i];
+        const value = signedValues[i];
+        if (entry === undefined || feed === undefined || value === undefined) {
+            allMatch = false;
+            mismatches.push(`#${i} missing`);
+            continue;
+        }
+        if (entry.groundTruth.kind !== 'ftso-anchor') {
+            allMatch = false;
+            mismatches.push(`#${i} ${entry.asset} unsupported kind`);
+            continue;
+        }
+        if (entry.groundTruth.feedId.toLowerCase() !== feed.toLowerCase()) {
+            allMatch = false;
+            mismatches.push(`#${i} ${entry.asset} feed ${entry.groundTruth.feedId} != ${feed}`);
+            continue;
+        }
+        let normalized: bigint | undefined;
+        try {
+            normalized = normalizeToPrice(
+                Number(entry.groundTruth.value),
+                entry.groundTruth.decimals,
+            );
+        } catch {
+            normalized = undefined;
+        }
+        if (normalized !== value) {
+            allMatch = false;
+            mismatches.push(`#${i} ${entry.asset} value ${normalized} != ${value}`);
+        }
+    }
+
+    checks.push(
+        verdict(
+            trailLabel,
+            allMatch,
+            allMatch ? `${signedFeedIds.length} assets` : mismatches.join('; '),
+        ),
+    );
+    return checks;
+}
+
+/**
  * Replay one entry's score from its revealed submission.
  *
  * Dispatches through the shared scorer registry, so the code that replays a score is literally
@@ -285,7 +399,15 @@ export interface CompetitionVerifyInput {
     /** Empty on the FCC path, where the signature is not EIP-712 typed data. */
     readonly signature: Hex;
     readonly settlementPath?: SettlementPath | undefined;
-    readonly signedGroundTruthValue: bigint;
+    /**
+     * The signed ground truth, as the parallel arrays the settlement carries. Index 0 is the
+     * PRIMARY — the leg the receipt's `groundTruth` / `startValue` describe and the scorer used.
+     *
+     * Arrays rather than one value because a portfolio settlement pins one feed per asset
+     * (BUGS.md 27). A single-asset competition passes length-1 arrays.
+     */
+    readonly signedFeedIds: readonly Hex[];
+    readonly signedGroundTruthValues: readonly bigint[];
     /** From the settle calldata. `score` is a bigint because the on-chain field is uint64. */
     readonly signedEntries: readonly { readonly agent: Address; readonly score: bigint }[];
     readonly registeredTee: Address;
@@ -332,7 +454,8 @@ export async function verifyCompetition(input: CompetitionVerifyInput): Promise<
                       message: {
                           competitionId: receipt.competitionId,
                           receiptHash: input.anchoredReceiptHash,
-                          groundTruthValue: input.signedGroundTruthValue,
+                          feedIds: [...input.signedFeedIds],
+                          groundTruthValues: [...input.signedGroundTruthValues],
                           entries: input.signedEntries.map((e) => ({
                               agent: e.agent,
                               score: e.score,
@@ -352,8 +475,18 @@ export async function verifyCompetition(input: CompetitionVerifyInput): Promise<
     checks.push(
         ...groundTruthChecks(
             receipt,
-            input.signedGroundTruthValue,
+            // Index 0 is the primary — the leg the receipt's groundTruth/startValue describe.
+            // `multiFeedChecks` below is what proves the rest of the array is honest.
+            input.signedGroundTruthValues[0] ?? 0n,
             input.refetchedGroundTruth,
+            signedValuesAvailable && input.signedGroundTruthValues.length > 0,
+        ),
+    );
+    checks.push(
+        ...multiFeedChecks(
+            receipt,
+            input.signedFeedIds,
+            input.signedGroundTruthValues,
             signedValuesAvailable,
         ),
     );
@@ -438,7 +571,11 @@ export async function verifyCompetition(input: CompetitionVerifyInput): Promise<
             const expected = replayScore(
                 scorer.scorer,
                 e.revealed,
-                input.signedGroundTruthValue,
+                // The PRIMARY asset's value — index 0 — because that is the one the scorer used
+                // and the one `receipt.startValue` pairs with. `multiFeedChecks` above already
+                // confirmed index 0 really is the feed the receipt names as primary, so this is
+                // not an assumption about ordering; it is a consequence of a checked one.
+                input.signedGroundTruthValues[0] ?? 0n,
                 startValue,
                 receipt.lifetimeSecs,
             );

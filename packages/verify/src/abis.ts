@@ -32,6 +32,13 @@ const feedDataWithProof = {
     ],
 } as const;
 
+/** The same tuple as an ARRAY, for `SealedCompetition.settle`'s per-asset proofs. */
+const feedDataWithProofArray = {
+    name: 'proofs',
+    type: 'tuple[]',
+    components: feedDataWithProof.components,
+} as const;
+
 export const jobEscrowVerifyAbi = [
     // --- storage the verifier re-reads rather than trusting a log -------------------------------
     {
@@ -144,7 +151,11 @@ export const sealedCompetitionVerifyAbi = [
         inputs: [
             { name: 'competitionId', type: 'bytes32' },
             { name: 'receiptHash', type: 'bytes32' },
-            { name: 'groundTruthValue', type: 'uint256' },
+            // Parallel arrays, index-aligned with `proofs` below. Note they are NOT adjacent to it
+            // in the argument list — `entries` and `signature` sit between — which matches the
+            // Solidity and is the kind of ordering that is easy to get wrong from memory.
+            { name: 'feedIds', type: 'bytes21[]' },
+            { name: 'groundTruthValues', type: 'uint256[]' },
             {
                 name: 'entries',
                 type: 'tuple[]',
@@ -155,7 +166,7 @@ export const sealedCompetitionVerifyAbi = [
                 ],
             },
             { name: 'signature', type: 'bytes' },
-            feedDataWithProof,
+            feedDataWithProofArray,
             { name: 'receipt', type: 'bytes' },
         ],
         outputs: [],
