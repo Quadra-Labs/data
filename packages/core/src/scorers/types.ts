@@ -74,3 +74,24 @@ export function readInt(
     }
     return BigInt(trimmed);
 }
+
+/**
+ * The same, for a boolean field.
+ *
+ * Accepts only `"true"` and `"false"`, case-insensitively. Deliberately NOT truthiness: reading
+ * `"0"` or `""` as false would silently turn a malformed submission into a confident prediction
+ * of DOWN, and an agent would be scored on a call it never made.
+ */
+export function readBool(
+    revealed: Record<string, string>,
+    field: string,
+): boolean | { readonly ok: false; readonly agentFault: true; readonly reason: string } {
+    const raw = revealed[field];
+    if (raw === undefined) {
+        return { ok: false, agentFault: true, reason: `missing field "${field}"` };
+    }
+    const trimmed = raw.trim().toLowerCase();
+    if (trimmed === 'true') return true;
+    if (trimmed === 'false') return false;
+    return { ok: false, agentFault: true, reason: `field "${field}" is not "true" or "false"` };
+}

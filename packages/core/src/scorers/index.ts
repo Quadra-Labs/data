@@ -14,12 +14,18 @@
 
 export * from './types.js';
 export { scorePriceRange, scorePriceRangeInput, type PriceRangeGuess } from './priceRange.js';
+export { scoreUpDown, scoreUpDownInput, type UpDownGuess } from './upDown.js';
+export { scoreMovementPct, scoreMovementPctInput, type MovementGuess } from './movementPct.js';
 
 import type { Scorer } from './types.js';
 import { scorePriceRangeInput } from './priceRange.js';
+import { scoreUpDownInput } from './upDown.js';
+import { scoreMovementPctInput } from './movementPct.js';
 
 const SCORERS: Readonly<Record<string, Scorer>> = {
     'price-range-guess': scorePriceRangeInput,
+    'up-down-guess': scoreUpDownInput,
+    'movement-percentage-guess': scoreMovementPctInput,
 };
 
 /**
@@ -37,7 +43,7 @@ const SCORERS: Readonly<Record<string, Scorer>> = {
  */
 const NOT_REPLAYABLE: Readonly<Record<string, string>> = {
     'portfolio-roi':
-        'a trading return is derived from the portfolio\'s own trades, which are private; ' +
+        "a trading return is derived from the portfolio's own trades, which are private; " +
         'the metric is TEE-signed and verified on chain, but there is no public input to recompute it from',
 };
 

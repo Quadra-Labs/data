@@ -65,8 +65,47 @@ function priceRangeTemplate(result: Record<string, string>): TemplateResult {
  * means intake cannot judge the delivery — treated as INVALID so the escrow refunds rather than
  * paying out for something nobody can check.
  */
+/**
+ * up-down-guess: a direction and a confidence in WHOLE PERCENT.
+ *
+ * The scorer clamps confidence into [50,100] rather than rejecting outside it, so this template
+ * must not reject there either — the two would then disagree about whether the same delivery was
+ * payable, and an agent would be refused payment for a submission the scorer was perfectly
+ * willing to grade. It rejects only what is not a number or not a direction at all.
+ */
+function upDownTemplate(result: Record<string, string>): TemplateResult {
+    const isUp = (result['isUp'] ?? '').trim().toLowerCase();
+    if (isUp !== 'true' && isUp !== 'false') {
+        return fail('field "isUp" must be "true" or "false"');
+    }
+    const confidence = asBigInt(result['confidence'], 'confidence');
+    if (isResult(confidence)) return confidence;
+    // A negative or absurd percent is not a weak signal, it is a broken producer.
+    if (confidence < 0n || confidence > 100n) {
+        return fail('confidence must be a whole percent in [0, 100]');
+    }
+    return ok;
+}
+
+/**
+ * movement-percentage-guess: a signed move in BASIS POINTS. 500 is +5%.
+ *
+ * Bounded at +/- 1,000,000 bps (a 10,000x move) purely to catch a producer that emitted a price
+ * where a percentage belonged — a mistake that otherwise delivers, gets paid, and scores 0.
+ */
+function movementPctTemplate(result: Record<string, string>): TemplateResult {
+    const bps = asBigInt(result['percentageBps'], 'percentageBps');
+    if (isResult(bps)) return bps;
+    if (bps < -1_000_000n || bps > 1_000_000n) {
+        return fail('percentageBps is outside +/-1000000 — is this a price rather than a move?');
+    }
+    return ok;
+}
+
 const TEMPLATES: Readonly<Record<string, (r: Record<string, string>) => TemplateResult>> = {
     'price-range-guess': priceRangeTemplate,
+    'up-down-guess': upDownTemplate,
+    'movement-percentage-guess': movementPctTemplate,
 };
 
 export function hasTemplate(evaluatorId: string): boolean {

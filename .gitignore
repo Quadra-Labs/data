@@ -13,3 +13,7 @@ dist
 
 # local-only seed scripts (may contain keys) — never commit
 *.local.ts
+
+# Tests are written, run green, and not committed - this repo carries source only. Matches
+# contracts/.gitignore; without this the scorer vector runners land in the tree.
+test/
