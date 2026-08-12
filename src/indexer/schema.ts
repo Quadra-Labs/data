@@ -23,7 +23,7 @@
  * checks it and refuses rather than failing at the first SELECT, which is what the Sui version did
  * when it met a database created before its newest column.
  */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /**
  * Columns added after a table shipped, applied one by one to a database that already exists.
@@ -158,6 +158,19 @@ CREATE TABLE IF NOT EXISTS submissions (
     PRIMARY KEY (competition_id, agent)
 );
 CREATE INDEX IF NOT EXISTS idx_submissions_block ON submissions(block_number);
+
+-- Who STAKED IN, which is not the same set as who submitted. An agent that joins and never submits
+-- forfeits its stake and cannot appear in the settlement at all -- _recordEntries reverts
+-- NoSubmission -- so counting the submissions table alone reports it as though it was never there.
+-- entrants counts submitters and keeps that meaning; this is the second, larger number.
+CREATE TABLE IF NOT EXISTS joins (
+    competition_id TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    stake TEXT NOT NULL DEFAULT '0',
+    block_number INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (competition_id, agent)
+);
+CREATE INDEX IF NOT EXISTS idx_joins_block ON joins(block_number);
 
 CREATE TABLE IF NOT EXISTS prizes (
     competition_id TEXT NOT NULL,

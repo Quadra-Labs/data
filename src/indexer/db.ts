@@ -156,6 +156,7 @@ interface DbCompetition {
     params: string;
     lifetime_secs: number;
     entrants: number;
+    joined: number;
 }
 
 function toCompetitionRow(r: DbCompetition): CompetitionRow {
@@ -179,12 +180,17 @@ function toCompetitionRow(r: DbCompetition): CompetitionRow {
         params: r.params,
         lifetimeSecs: r.lifetime_secs,
         entrants: r.entrants,
+        joined: r.joined,
     };
 }
 
+// `entrants` counts SUBMITTERS and `joined` counts STAKERS. They differ by the agents that paid in
+// and never submitted, who forfeit the stake and cannot be named in the settlement at all — so a
+// single number here would report them as though they had never entered.
 const COMPETITION_SELECT = `
     SELECT c.*,
-           (SELECT COUNT(*) FROM submissions s WHERE s.competition_id = c.competition_id) AS entrants
+           (SELECT COUNT(*) FROM submissions s WHERE s.competition_id = c.competition_id) AS entrants,
+           (SELECT COUNT(*) FROM joins j WHERE j.competition_id = c.competition_id) AS joined
       FROM competitions c`;
 
 /** The agents-with-track projection every ranked read starts from. */
@@ -485,22 +491,32 @@ export class IndexDb {
     }
 
     /**
-     * A refund closes the job on BOTH clocks.
+     * A refund always closes the ESCROW. Whether it also closes the SCORE depends on whether
+     * anything was delivered, and the index must not decide that for itself.
      *
-     * `refundNotDelivered` sets `released = true` AND `scored = true`, and records a 0 in the
-     * Passport — its own comment calls that "this job's final word on reputation". An index that
-     * left `scored` false would disagree with the contract and would keep offering the job to a
-     * keeper as still-scorable.
+     * `refundNotDelivered` writes the zero and `scored = true` only for a job with NOTHING
+     * delivered, where the 0 is its final word on reputation. A DELIVERED job that is refunded
+     * anyway stays scorable on chain, and its real `JobScored` still arrives later — so writing a 0
+     * here would invent a score the chain never recorded, and the later `applyScored` would silently
+     * correct a number a reader may already have seen. See BUGS.md 42.
      *
-     * `released_at_ms` is written here too, uniformly meaning "the block that closed this escrow".
-     * A refund is not settled work and must never reach the activity chart — that is what the
-     * `delivered = 1` filter in `activitySeries` is for, not an unwritten column.
+     * `released_at_ms` is written in both cases, uniformly meaning "the block that closed this
+     * escrow". A refund is not settled work and must never reach the activity chart — that is what
+     * the `delivered = 1` filter in `activitySeries` is for, not an unwritten column.
+     *
+     * KNOWN EDGE: a job whose `Delivered` log predates `FROM_BLOCK` reads as undelivered here and
+     * takes the zero. Self-corrects on a full reindex, which a redeploy forces anyway.
      */
     applyRefunded(j: { jobId: string; agent: string; user: string; atMs: number }): void {
+        const row = this.#db
+            .prepare(`SELECT delivered FROM jobs WHERE job_id = @jobId`)
+            .get({ jobId: j.jobId }) as { delivered: number } | undefined;
+        const wasDelivered = row?.delivered === 1;
+
         this.#upsertJob(j.jobId, lower(j.agent), {
             released: 1,
-            scored: 1,
-            score: 0,
+            // Mirrors the contract's own branch rather than assuming either outcome.
+            ...(wasDelivered ? {} : { scored: 1, score: 0 }),
             released_at_ms: j.atMs,
             status: 'refunded',
         });
@@ -577,10 +593,28 @@ export class IndexDb {
             });
     }
 
-    applyJoined(c: { competitionId: string; agent: string; stake: bigint }): void {
+    applyJoined(c: {
+        competitionId: string;
+        agent: string;
+        stake: bigint;
+        blockNumber: number;
+    }): void {
         const tx = this.#db.transaction(() => {
             this.#adjustPool(c.competitionId, c.stake);
             this.upsertAgentIdentity({ wallet: c.agent });
+            // `join` reverts `AlreadyJoined`, so a second row is unreachable on chain — OR IGNORE
+            // is here for the replay case, where the same log can be applied twice after a rewind.
+            this.#db
+                .prepare(
+                    `INSERT OR IGNORE INTO joins (competition_id, agent, stake, block_number)
+                     VALUES (@competitionId, @agent, @stake, @blockNumber)`,
+                )
+                .run({
+                    competitionId: c.competitionId,
+                    agent: lower(c.agent),
+                    stake: c.stake.toString(),
+                    blockNumber: c.blockNumber,
+                });
         });
         tx();
     }
@@ -717,6 +751,7 @@ export class IndexDb {
         const tx = this.#db.transaction(() => {
             this.#db.prepare(`DELETE FROM jobs WHERE block_number > @n`).run({ n: blockNumber });
             this.#db.prepare(`DELETE FROM submissions WHERE block_number > @n`).run({ n: blockNumber });
+            this.#db.prepare(`DELETE FROM joins WHERE block_number > @n`).run({ n: blockNumber });
             this.#db.prepare(`DELETE FROM prizes WHERE block_number > @n`).run({ n: blockNumber });
             this.#db
                 .prepare(`DELETE FROM competitions WHERE created_block > @n`)

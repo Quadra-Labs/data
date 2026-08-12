@@ -74,6 +74,13 @@ export interface CompetitionView {
      * this is only who is in, which is public by design.
      */
     readonly entrants: readonly Address[];
+    /**
+     * Agents that STAKED IN, whether or not they went on to submit — always a superset of
+     * `entrants`. The difference is the agents that forfeit: `_recordEntries` reverts
+     * `NoSubmission`, so a staker with no submission cannot be named in the settlement and would
+     * otherwise be invisible in every read of this competition.
+     */
+    readonly joined: readonly Address[];
     /** Empty until settled. */
     readonly winners: readonly Winner[];
 }
@@ -97,12 +104,12 @@ export function makeCompetitionReader(
     client: PublicClient,
     sealedCompetition: Address,
 ): CompetitionReader {
-    /** Who submitted, and who won. Both are bounded log scans against the competition id. */
+    /** Who joined, who submitted, and who won. All bounded log scans against the competition id. */
     async function participants(
         competitionId: Hex,
         fromBlock: bigint,
-    ): Promise<{ entrants: Address[]; winners: Winner[] }> {
-        const [submitted, prizes] = await Promise.all([
+    ): Promise<{ entrants: Address[]; joined: Address[]; winners: Winner[] }> {
+        const [submitted, joins, prizes] = await Promise.all([
             getLogsChunked({
                 client,
                 fromBlock,
@@ -123,6 +130,19 @@ export function makeCompetitionReader(
                     client.getContractEvents({
                         address: sealedCompetition,
                         abi: sealedCompetitionAbi,
+                        eventName: 'Joined',
+                        args: { competitionId },
+                        fromBlock: from,
+                        toBlock: to,
+                    }),
+            }),
+            getLogsChunked({
+                client,
+                fromBlock,
+                fetch: (from, to) =>
+                    client.getContractEvents({
+                        address: sealedCompetition,
+                        abi: sealedCompetitionAbi,
                         eventName: 'PrizeAwarded',
                         args: { competitionId },
                         fromBlock: from,
@@ -131,15 +151,24 @@ export function makeCompetitionReader(
             }),
         ]);
 
-        const seen = new Set<string>();
-        const entrants: Address[] = [];
-        for (const l of submitted) {
-            const a = l.args.agent;
-            if (a && !seen.has(a.toLowerCase())) {
-                seen.add(a.toLowerCase());
-                entrants.push(a);
+        /** Distinct agents from a log set, first-seen order. */
+        const distinctAgents = (
+            logs: readonly { args: { agent?: Address | undefined } }[],
+        ): Address[] => {
+            const seen = new Set<string>();
+            const out: Address[] = [];
+            for (const l of logs) {
+                const a = l.args.agent;
+                if (a && !seen.has(a.toLowerCase())) {
+                    seen.add(a.toLowerCase());
+                    out.push(a);
+                }
             }
-        }
+            return out;
+        };
+
+        const entrants = distinctAgents(submitted);
+        const joined = distinctAgents(joins);
         const winners: Winner[] = prizes
             .filter((l) => l.args.agent !== undefined && l.args.amount !== undefined)
             .map((l) => ({
@@ -149,12 +178,12 @@ export function makeCompetitionReader(
             }))
             .sort((a, b) => a.rank - b.rank);
 
-        return { entrants, winners };
+        return { entrants, joined, winners };
     }
 
     async function readState(
         competitionId: Hex,
-    ): Promise<Omit<CompetitionView, 'entrants' | 'winners' | 'awarded'> | undefined> {
+    ): Promise<Omit<CompetitionView, 'entrants' | 'joined' | 'winners' | 'awarded'> | undefined> {
         const [r, splitPct] = await Promise.all([
             client.readContract({
                 address: sealedCompetition,
@@ -279,8 +308,8 @@ export function makeCompetitionReader(
                 floor = created.at(-1)?.blockNumber ?? searchFloor;
             }
 
-            const { entrants, winners } = await participants(competitionId, floor);
-            return { ...state, entrants, winners, awarded: totalAwarded(winners) };
+            const { entrants, joined, winners } = await participants(competitionId, floor);
+            return { ...state, entrants, joined, winners, awarded: totalAwarded(winners) };
         },
     };
 }

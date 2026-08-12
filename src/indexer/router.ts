@@ -209,14 +209,20 @@ function routeOne(
         case 'JobNotDelivered': {
             const jobId = String(a['jobId']);
             const agent = String(a['agent'] ?? '');
+            // Read the delivery flag BEFORE applying the refund, so the reason describes what
+            // actually happened. `JobNotDelivered` fires for two different stories and its name
+            // only fits one of them: nothing arrived, or something arrived and was refunded
+            // anyway (rejected by intake, or the buyer waited out the grace). Calling the second
+            // one "no result was delivered" tells a buyer the opposite of the truth.
+            const delivered = db.getJob(jobId)?.delivered === true;
             db.applyRefunded({ jobId, agent, user: String(a['user'] ?? ''), atMs: entry.atMs });
-            // The chain records THAT a job refunded, never why. Capture the one reason it does
-            // imply, so a buyer sees something better than an unexplained reversal.
             db.addFailure({
                 jobId,
                 agent,
                 kind: 'delayed',
-                reason: 'no result was delivered before the deadline',
+                reason: delivered
+                    ? 'a result was delivered but the escrow was refunded before it was released'
+                    : 'no result was delivered before the deadline',
                 source: 'chain',
                 at: entry.atMs,
             });
@@ -299,6 +305,7 @@ function routeOne(
                 competitionId: String(a['competitionId']),
                 agent: String(a['agent'] ?? ''),
                 stake: (a['stake'] as bigint) ?? 0n,
+                blockNumber: entry.blockNumber,
             });
             note();
             return 'applied';

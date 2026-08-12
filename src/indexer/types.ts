@@ -154,7 +154,20 @@ export interface CompetitionRow {
      * were scored over whatever the engine's configuration said at the time.
      */
     lifetimeSecs: number;
+    /**
+     * Distinct agents that SUBMITTED. Not the number that entered — see `joined`.
+     */
     entrants: number;
+    /**
+     * Distinct agents that STAKED IN, whether or not they went on to submit.
+     *
+     * Always `>= entrants`, and the gap is meaningful rather than cosmetic: an agent that joins and
+     * never submits forfeits its stake and cannot be named in the settlement at all
+     * (`_recordEntries` reverts `NoSubmission`), so reporting only `entrants` describes it as
+     * though it had never been there. `0` on rows indexed before this table existed, until a
+     * reindex.
+     */
+    joined: number;
 }
 
 export interface SubmissionRow {

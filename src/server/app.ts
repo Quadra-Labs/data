@@ -46,6 +46,17 @@ interface RawBodyRequest extends FastifyRequest {
 const bad = (reply: FastifyReply, code: number, error: string, detail?: string): FastifyReply =>
     reply.code(code).send(detail === undefined ? { error } : { error, detail });
 
+/**
+ * A bytes32 id, as every job and competition id on this chain is.
+ *
+ * Checked BEFORE any route hands an id to a live chain read. viem rejects a malformed hex itself,
+ * but it does so by throwing, which Fastify turns into a 500 `internal_error` — telling the caller
+ * the SERVER is broken when in fact their id was. The routes that only read the index never had
+ * this problem, because a lookup miss is just a miss; it is the fallthrough to the chain that
+ * turns a typo into an exception.
+ */
+const isBytes32 = (value: string): boolean => /^0x[0-9a-fA-F]{64}$/.test(value);
+
 export function buildApp(opts: AppOptions): FastifyInstance {
     const cfg = opts.config;
     const app = Fastify({ logger: true, bodyLimit: 16 * 1024 });
@@ -345,6 +356,12 @@ export function buildApp(opts: AppOptions): FastifyInstance {
      */
     app.get('/jobs/:jobId/ciphertext', async (req, reply) => {
         const { jobId } = req.params as { jobId: string };
+        // Same guard, same reason as `/competitions/:id`: the index miss below falls through to a
+        // log scan that hands the id to viem. `/jobs/:jobId` needs no guard because it stops at
+        // the index — the difference is the chain read, not the parameter.
+        if (!isBytes32(jobId)) {
+            return bad(reply, 400, 'bad_job_id', 'expected a 0x-prefixed 32-byte hex id');
+        }
         const db = await idx();
         const job = db?.getJob(jobId);
 
@@ -402,6 +419,12 @@ export function buildApp(opts: AppOptions): FastifyInstance {
 
     app.get('/competitions/:id', async (req, reply) => {
         const { id } = req.params as { id: string };
+        // Rejected here rather than at the chain read below: `competitions.get` passes the id
+        // straight to viem, which throws on a malformed hex, and an uncaught throw is a 500. A
+        // caller that mistyped an id was being told the server had failed.
+        if (!isBytes32(id)) {
+            return bad(reply, 400, 'bad_competition_id', 'expected a 0x-prefixed 32-byte hex id');
+        }
         const db = await idx();
         const indexed = db?.getCompetition(id);
         if (indexed) {

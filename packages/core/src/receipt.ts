@@ -68,6 +68,35 @@ export interface ReceiptEntry {
      * bigint, which is what `uint64` decodes to.
      */
     readonly score: number;
+    /**
+     * Why this entry did not score on its merits — an unopenable payload, a submission that would
+     * not parse, a portfolio that could not be valued. OMITTED ENTIRELY when the score is the
+     * scorer's honest verdict on a readable submission, so a clean receipt keeps the exact bytes it
+     * had before this field existed.
+     *
+     * Without it a zero is unattributable: "the agent forecast badly" and "the enclave key rotated
+     * and nobody could open this" are the same number, and only one of them is the agent's fault.
+     * The enclave's own logs held that distinction and crossed no wire, which made the answer
+     * available only to whoever had shell access to the host a TEE exists so you need not trust.
+     */
+    readonly reason?: string;
+}
+
+/**
+ * Why an agent that took part appears in no scored entry.
+ *
+ * - `not-joined` — submitted without staking. The contract would reject the entry (`EntryNotJoined`).
+ * - `unrecoverable-tx` — the commitment is on chain but the ciphertext could not be recovered from
+ *   the transaction that carried it, so there is nothing to score. Usually a batching wallet.
+ * - `no-submission` — staked and never submitted. The stake is forfeit, and `_recordEntries`
+ *   rejects such an entry (`NoSubmission`), so the settlement structurally cannot name them.
+ */
+export type OmittedReason = 'not-joined' | 'unrecoverable-tx' | 'no-submission';
+
+/** An agent the settlement could not include, and why. */
+export interface OmittedEntry {
+    readonly agent: Address;
+    readonly reason: OmittedReason;
 }
 
 export interface Receipt {
@@ -101,6 +130,18 @@ export interface Receipt {
      * here because a portfolio's ROI needs each leg's opening price, not just the primary's.
      */
     readonly groundTruths?: readonly PricedAsset[];
+    /**
+     * Agents that took part and appear in no entry, with the reason for each. Follows the same
+     * omitted-when-empty rule as `groundTruths` above, for the same reason: a settlement that
+     * excluded nobody must serialize exactly as it did before this field existed.
+     *
+     * This is the only attested record such an agent gets. A staker who never submits cannot be
+     * named in the settlement at all — `_recordEntries` reverts `NoSubmission` — so without this
+     * they forfeit a stake and appear in no receipt, no Passport track and no event beyond their
+     * own `Joined`. Sorted by lowercased address, because this is a hash preimage and two enclaves
+     * scoring the same competition must produce the same bytes.
+     */
+    readonly omitted?: readonly OmittedEntry[];
     /** Integer string in the feed's decimals; the tolerance scale the scorer used. */
     readonly startValue: string;
     /**
@@ -125,10 +166,11 @@ export function canonicalize(value: unknown): string {
     if (Array.isArray(value)) return `[${value.map(canonicalize).join(',')}]`;
     const obj = value as Record<string, unknown>;
     // A key present with an `undefined` value is DROPPED, matching what `JSON.stringify` does for
-    // objects. This matters now that `Receipt.groundTruths` is optional: `{...r, groundTruths:
-    // undefined}` and omitting the key are the same intent, and without this line the first one
-    // serializes the literal text `undefined` into the hash preimage — invalid JSON that still
-    // hashes, so it would anchor on chain and only fail when a verifier tried to parse it back.
+    // objects. This matters for the optional fields — `Receipt.groundTruths`, `Receipt.omitted` and
+    // `ReceiptEntry.reason`: `{...r, groundTruths: undefined}` and omitting the key are the same
+    // intent, and without this line the first one serializes the literal text `undefined` into the
+    // hash preimage — invalid JSON that still hashes, so it would anchor on chain and only fail
+    // when a verifier tried to parse it back.
     // No previously-valid receipt is affected, because such a receipt could never have parsed.
     const keys = Object.keys(obj)
         .filter((k) => obj[k] !== undefined)
